@@ -1,0 +1,35 @@
+version: '3.8'
+
+services:
+  optimarr:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: optimarr-dev
+    ports:
+      - "5000:5000"
+    volumes:
+      # Mount source code for hot reload
+      - .:/app
+      # Exclude build artifacts
+      - /app/bin
+      - /app/obj
+      # Mount config, data, and videos as separate volumes (override the source mount)
+      - ./config:/app/config:ro
+      # Data folder (database)
+      - ./data:/app/data
+      # Logs folder
+      - ./logs:/app/logs
+      # Video library folder
+      - ./videos:/videos:ro
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ASPNETCORE_URLS=http://0.0.0.0:5000
+    restart: unless-stopped
+    networks:
+      - servarr-network
+
+networks:
+  servarr-network:
+    driver: bridge
+

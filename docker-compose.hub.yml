@@ -1,0 +1,75 @@
+version: '3.8'
+
+# Docker Compose file for using the pre-built image from Docker Hub
+# Replace 'yourusername/optimarr' with your actual Docker Hub username/repository name
+
+services:
+  optimarr:
+    image: yourusername/optimarr:latest
+    container_name: optimarr
+    ports:
+      - "5000:8080"
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Production
+      - ASPNETCORE_URLS=http://+:8080
+    volumes:
+      # Configuration folder
+      # Note: If ./config is empty on the host, it will hide the container's default config
+      # Run init-config.ps1 (Windows) or init-config.sh (Linux/Mac) before starting
+      - ./config:/app/config:ro
+      # Data folder (database)
+      - ./data:/app/data
+      # Logs folder
+      - ./logs:/app/logs
+      # Video library folder
+      - ./videos:/videos:ro
+    restart: unless-stopped
+    networks:
+      - servarr-network
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/api/system/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Optional: Uncomment if you want to run Sonarr in the same compose
+  # sonarr:
+  #   image: lscr.io/linuxserver/sonarr:latest
+  #   container_name: sonarr
+  #   environment:
+  #     - PUID=1000
+  #     - PGID=1000
+  #     - TZ=Etc/UTC
+  #   volumes:
+  #     - ./sonarr-config:/config
+  #     - /path/to/tv:/tv
+  #     - /path/to/downloads:/downloads
+  #   ports:
+  #     - "8989:8989"
+  #   restart: unless-stopped
+  #   networks:
+  #     - servarr-network
+
+  # Optional: Uncomment if you want to run Radarr in the same compose
+  # radarr:
+  #   image: lscr.io/linuxserver/radarr:latest
+  #   container_name: radarr
+  #   environment:
+  #     - PUID=1000
+  #     - PGID=1000
+  #     - TZ=Etc/UTC
+  #   volumes:
+  #     - ./radarr-config:/config
+  #     - /path/to/movies:/movies
+  #     - /path/to/downloads:/downloads
+  #   ports:
+  #     - "7878:7878"
+  #   restart: unless-stopped
+  #   networks:
+  #     - servarr-network
+
+networks:
+  servarr-network:
+    driver: bridge
+

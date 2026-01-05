@@ -1,0 +1,24 @@
+# Development Dockerfile with hot reload support
+FROM mcr.microsoft.com/dotnet/sdk:8.0
+
+WORKDIR /app
+
+# Install MediaInfo dependencies
+RUN apt-get update && \
+    apt-get install -y libmediainfo0v5 libzen0v5 && \
+    rm -rf /var/lib/apt/lists/*
+
+# Copy project file and restore dependencies
+COPY optimarr.csproj .
+RUN dotnet restore
+
+# Copy everything else
+COPY . .
+
+# Expose port
+EXPOSE 5000
+EXPOSE 5001
+
+# Run with hot reload
+ENTRYPOINT ["dotnet", "watch", "run", "--urls", "http://0.0.0.0:5000"]
+

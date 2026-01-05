@@ -1,0 +1,86 @@
+## Ignore build results
+[Dd]ebug/
+[Dd]ebugPublic/
+[Rr]elease/
+[Rr]eleases/
+x64/
+x86/
+[Ww][Ii][Nn]32/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+bld/
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Ll]ogs/
+
+## Ignore Visual Studio files
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+## Ignore NuGet packages
+*.nupkg
+*.snupkg
+**/packages/*
+!**/packages/build/
+*.nuget.props
+*.nuget.targets
+
+## Ignore test results
+[Tt]est[Rr]esult*/
+[Bb]uild[Ll]og.*
+*.trx
+*.coverage
+*.coveragexml
+
+## Ignore Git
+.git/
+.gitignore
+.gitattributes
+
+## Ignore Docker (but keep entrypoint script)
+Dockerfile*
+.dockerignore
+docker-compose*.yml
+!docker-entrypoint.sh
+
+## Ignore documentation (but keep important config docs)
+README.md
+*.md
+!DOCKER.md
+
+## Ignore development files
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+## Ignore test files
+[Tt]est/
+[Tt]ests/
+*[Tt]est*.cs
+*[Tt]est*.js
+
+## Ignore other files
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+## Ignore empty directories
+Commands/
+Converters/
+ViewModels/
+
+## Keep config and videos directories (they may be mounted as volumes)
+!config/
+!videos/

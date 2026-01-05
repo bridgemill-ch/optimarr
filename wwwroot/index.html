@@ -1,0 +1,536 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Optimarr - Media Optimization</title>
+    <link rel="icon" type="image/svg+xml" href="logo.svg">
+    <link rel="alternate icon" type="image/svg+xml" href="logo.svg">
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="app-wrapper">
+        <!-- Mobile Menu Toggle -->
+        <button class="mobile-menu-toggle" id="mobileMenuToggle" aria-label="Toggle menu">
+            <span></span>
+            <span></span>
+            <span></span>
+        </button>
+        
+        <!-- Mobile Overlay -->
+        <div class="mobile-overlay" id="mobileOverlay"></div>
+        
+        <!-- Sidebar Navigation -->
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <div class="logo-container">
+                    <img src="logo.svg" alt="Optimarr Logo" class="logo">
+                </div>
+                <div class="brand-text">
+                    <h1>Optimarr</h1>
+                    <span class="subtitle">Media Optimization</span>
+                </div>
+            </div>
+            <nav class="sidebar-nav">
+                <a href="#dashboard" class="nav-item active" data-tab="dashboard">
+                    <span class="nav-icon">📊</span>
+                    <span class="nav-text">Dashboard</span>
+                </a>
+                <a href="#browse" class="nav-item" data-tab="browse">
+                    <span class="nav-icon">🔍</span>
+                    <span class="nav-text">Browse</span>
+                </a>
+                <a href="#library" class="nav-item" data-tab="library">
+                    <span class="nav-icon">📁</span>
+                    <span class="nav-text">Library</span>
+                </a>
+                <a href="#settings" class="nav-item" data-tab="settings">
+                    <span class="nav-icon">⚙️</span>
+                    <span class="nav-text">Settings</span>
+                </a>
+            </nav>
+            <div class="sidebar-footer">
+                <div class="sidebar-version">
+                    <span class="version-label">Version</span>
+                    <span class="version-number" id="appVersion">Loading...</span>
+                </div>
+                <button class="btn btn-secondary btn-reboot" id="rebootButton" onclick="handleReboot()">
+                    <span class="nav-icon">🔄</span>
+                    <span>Reboot</span>
+                </button>
+            </div>
+        </aside>
+
+        <!-- Main Content Area -->
+        <main class="main-content">
+            <!-- Dashboard Tab -->
+            <section id="dashboard" class="content-section active">
+                <div class="page-header">
+                    <h2>Dashboard</h2>
+                </div>
+
+                <div class="content-box" id="ratingInfoBox" style="margin-bottom: 1.5rem;">
+                    <div class="box-header" style="position: relative;">
+                        <button class="info-banner-close" onclick="closeRatingInfoBox()" aria-label="Close" title="Close">
+                            <span>×</span>
+                        </button>
+                        <h3>Understanding Compatibility Ratings</h3>
+                        <p style="margin-top: 0.5rem; color: var(--text-secondary);">
+                            The rating shows the number of Jellyfin clients that can Direct Play the video (out of 11 total clients). Higher numbers indicate better compatibility.
+                        </p>
+                    </div>
+                    <div class="box-content">
+                        <div class="info-box" style="margin: 0;">
+                            <p style="margin: 0 0 0.75rem 0;">Videos are rated based on the number of Jellyfin clients that can Direct Play them (out of 11 total clients):</p>
+                            <ul style="margin: 0 0 0.75rem 0; padding-left: 1.5rem;">
+                                <li><strong>Optimal (✓):</strong> At least <span id="dashboardOptimalThreshold">8</span> clients can <strong>Direct Play</strong> - no server processing needed, best performance</li>
+                                <li><strong>Good (~):</strong> At least <span id="dashboardGoodDirectThreshold">5</span> clients can Direct Play, OR at least <span id="dashboardGoodCombinedThreshold">8</span> clients can Direct Play or <strong>Remux</strong> (container change only) - minimal server load</li>
+                                <li><strong>Poor (✗):</strong> Fewer clients meet the "Good" criteria - may require <strong>Transcoding</strong> (full re-encoding) on many devices, higher server CPU usage</li>
+                            </ul>
+                            <p style="margin: 0; font-size: 0.875rem; color: var(--text-secondary);">
+                                <strong>💡 Tip:</strong> You can adjust these thresholds in <a href="#settings" onclick="document.querySelector('[data-tab=settings]').click(); return false;" style="color: var(--primary-color); text-decoration: underline;">Settings</a> to match your needs. Changes only apply to newly scanned videos.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="stats-row">
+                    <div class="stat-box clickable-stat" onclick="navigateToBrowseWithFilter('')" style="cursor: pointer;" title="Click to view all videos">
+                        <div class="stat-icon">🎬</div>
+                        <div class="stat-info">
+                            <div class="stat-value" id="totalVideos">-</div>
+                            <div class="stat-label">Total Videos</div>
+                        </div>
+                    </div>
+                    <div class="stat-box optimal clickable-stat" onclick="navigateToBrowseWithFilter('Optimal')" style="cursor: pointer;" title="Click to view all Optimal videos">
+                        <div class="stat-icon">✓</div>
+                        <div class="stat-info">
+                            <div class="stat-value" id="optimalCount">-</div>
+                            <div class="stat-label">Optimal</div>
+                        </div>
+                    </div>
+                    <div class="stat-box good clickable-stat" onclick="navigateToBrowseWithFilter('Good')" style="cursor: pointer;" title="Click to view all Good videos">
+                        <div class="stat-icon">⚠</div>
+                        <div class="stat-info">
+                            <div class="stat-value" id="goodCount">-</div>
+                            <div class="stat-label">Good</div>
+                        </div>
+                    </div>
+                    <div class="stat-box poor clickable-stat" onclick="navigateToBrowseWithFilter('Poor')" style="cursor: pointer;" title="Click to view all Poor videos">
+                        <div class="stat-icon">✗</div>
+                        <div class="stat-info">
+                            <div class="stat-value" id="poorCount">-</div>
+                            <div class="stat-label">Poor</div>
+                        </div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-icon">💾</div>
+                        <div class="stat-info">
+                            <div class="stat-value" id="totalSize">-</div>
+                            <div class="stat-label">Total Size</div>
+                        </div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-icon">🎨</div>
+                        <div class="stat-info">
+                            <div class="stat-value" id="hdrCount">-</div>
+                            <div class="stat-label">HDR Videos</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="content-box">
+                    <div class="box-header">
+                        <h3>Compatibility Distribution</h3>
+                    </div>
+                    <div class="box-content">
+                        <div id="compatibilityChart" class="chart-container"></div>
+                    </div>
+                </div>
+
+                <div class="content-row">
+                    <div class="content-box">
+                        <div class="box-header">
+                            <h3>Video Codecs</h3>
+                        </div>
+                        <div class="box-content">
+                            <div id="codecChart" class="chart-container"></div>
+                        </div>
+                    </div>
+                    <div class="content-box">
+                        <div class="box-header">
+                            <h3>Containers</h3>
+                        </div>
+                        <div class="box-content">
+                            <div id="containerChart" class="chart-container"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Client Compatibility Dashboard -->
+                <div class="content-box">
+                    <div class="box-header">
+                        <h3>Client Compatibility Overview</h3>
+                        <small style="color: var(--text-secondary); font-weight: normal;">Compatibility across all videos in your library</small>
+                    </div>
+                    <div class="box-content">
+                        <div id="clientCompatibilityList" class="client-compatibility-list"></div>
+                    </div>
+                </div>
+
+                <!-- Jellyfin Clients Section -->
+                <div class="content-box" id="jellyfinClientsBox" style="display: none;">
+                    <div class="box-header">
+                        <h3>📺 Jellyfin Clients in Use</h3>
+                        <small style="color: var(--text-secondary); font-weight: normal;">Based on playback history</small>
+                    </div>
+                    <div class="box-content">
+                        <div id="jellyfinClients" class="loading-placeholder">Loading clients...</div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Browse Tab -->
+            <section id="browse" class="content-section">
+                <div class="page-header">
+                    <h2>Browse Media</h2>
+                </div>
+
+                <div class="content-box">
+                    <div class="box-header">
+                        <div class="browse-controls">
+                            <div class="browse-filters">
+                                <div class="control-section-label">Filters</div>
+                                <div class="browse-toolbar">
+                                    <select id="browseLibraryFilter" class="form-control">
+                                        <option value="">All Libraries</option>
+                                    </select>
+                                    <select id="browseCodecFilter" class="form-control">
+                                        <option value="">All Codecs</option>
+                                    </select>
+                                    <select id="browseContainerFilter" class="form-control">
+                                        <option value="">All Containers</option>
+                                    </select>
+                                    <select id="browseScoreFilter" class="form-control">
+                                        <option value="">All Scores</option>
+                                        <option value="Optimal">Optimal</option>
+                                        <option value="Good">Good</option>
+                                        <option value="Poor">Poor</option>
+                                    </select>
+                                    <input type="text" id="browseSearch" class="form-control" placeholder="Search filename, path, codec, container..." onkeypress="if(event.key==='Enter') loadBrowseMedia()">
+                                    <label class="checkbox-label" style="display: flex; align-items: center; gap: 0.5rem; white-space: nowrap;">
+                                        <input type="checkbox" id="browseBrokenFilter" onchange="loadBrowseMedia()">
+                                        <span>Broken Only</span>
+                                    </label>
+                                    <button class="btn btn-secondary" onclick="loadBrowseMedia()">Filter</button>
+                                </div>
+                            </div>
+                            <div class="browse-sort">
+                                <div class="control-section-label">Sort</div>
+                                <div class="browse-toolbar">
+                                    <select id="browseSortBy" class="form-control">
+                                        <option value="analyzedAt">Date Analyzed</option>
+                                        <option value="fileName">Name</option>
+                                        <option value="fileSize">File Size</option>
+                                        <option value="compatibilityRating">Rating</option>
+                                        <option value="duration">Duration</option>
+                                        <option value="width">Resolution</option>
+                                    </select>
+                                    <select id="browseSortOrder" class="form-control">
+                                        <option value="desc">Descending</option>
+                                        <option value="asc">Ascending</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="box-content">
+                        <div id="browseMediaGrid" class="media-grid">
+                            <div class="loading-placeholder">Loading media...</div>
+                        </div>
+                        <div id="browsePagination" class="pagination"></div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Library Tab -->
+            <section id="library" class="content-section">
+                <div class="page-header">
+                    <h2>Library Management</h2>
+                    <button class="btn btn-primary btn-icon" onclick="showAddLibraryModal()" title="Add Library">
+                        <span class="btn-icon-text">+</span>
+                    </button>
+                </div>
+
+                <div class="content-box">
+                    <div class="box-header">
+                        <h3>Libraries</h3>
+                    </div>
+                    <div class="box-content">
+                        <div id="knownLibraries" class="libraries-grid">
+                            <div class="loading-placeholder">Loading libraries...</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Scan Progress (hidden by default, shown when scanning) -->
+                <div id="scanProgress" style="display: none;" class="content-box">
+                    <div class="box-header">
+                        <h3>Scan Progress</h3>
+                    </div>
+                    <div class="box-content">
+                        <div class="progress-container">
+                            <div class="progress-bar">
+                                <div id="scanProgressBar" class="progress-fill"></div>
+                            </div>
+                            <div id="scanStatus" class="progress-text"></div>
+                            <div id="scanDetails" class="scan-details">
+                                <div class="detail-row">
+                                    <span class="detail-label">Current File:</span>
+                                    <span id="currentFile" class="detail-value">-</span>
+                                </div>
+                                <div class="detail-row">
+                                    <span class="detail-label">Speed:</span>
+                                    <span id="scanSpeed" class="detail-value">-</span>
+                                </div>
+                                <div class="detail-row">
+                                    <span class="detail-label">Elapsed:</span>
+                                    <span id="scanElapsed" class="detail-value">-</span>
+                                </div>
+                                <div class="detail-row">
+                                    <span class="detail-label">Remaining:</span>
+                                    <span id="scanRemaining" class="detail-value">-</span>
+                                </div>
+                            </div>
+                            <div id="scanErrors" class="scan-errors" style="display: none;">
+                                <div class="errors-header">
+                                    <strong>Errors (<span id="errorCount">0</span>)</strong>
+                                    <button id="toggleErrors" class="toggle-btn">Show</button>
+                                </div>
+                                <div id="errorsList" class="errors-list" style="display: none;"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Settings Tab -->
+            <section id="settings" class="content-section">
+                <div class="page-header">
+                    <h2>Settings</h2>
+                </div>
+
+                <div class="content-box">
+                    <div class="box-header">
+                        <h3>Configuration</h3>
+                    </div>
+                    <div class="box-content">
+                        <form id="settingsForm" class="form">
+                            <div class="settings-section">
+                                <h4>Jellyfin</h4>
+                                <div class="info-box" style="margin-bottom: 1rem; padding: 0.75rem; background-color: var(--bg-secondary); border-radius: 4px; border-left: 3px solid var(--primary-color);">
+                                    <p style="margin: 0; font-size: 0.875rem; color: var(--text-secondary);">
+                                        Configure Jellyfin connection to sync playback history and match with your local libraries. You can use either an API Key or Username/Password for authentication.
+                                    </p>
+                                </div>
+                                <div class="form-group">
+                                    <label for="jellyfinUrl">Base URL</label>
+                                    <input type="text" id="jellyfinUrl" class="form-control" placeholder="http://localhost:8096">
+                                </div>
+                                <div class="form-group">
+                                    <label for="jellyfinApiKey">API Key (Optional if using Username/Password)</label>
+                                    <input type="password" id="jellyfinApiKey" class="form-control" placeholder="Your Jellyfin API Key">
+                                    <small class="form-help">Get this from: Dashboard → API Keys</small>
+                                </div>
+                                <div class="form-group">
+                                    <label for="jellyfinUsername">Username (Optional if using API Key)</label>
+                                    <input type="text" id="jellyfinUsername" class="form-control" placeholder="Your Jellyfin username">
+                                </div>
+                                <div class="form-group">
+                                    <label for="jellyfinPassword">Password (Optional if using API Key)</label>
+                                    <input type="password" id="jellyfinPassword" class="form-control" placeholder="Your Jellyfin password">
+                                    <small class="form-help">Leave blank to keep current password</small>
+                                </div>
+                                <div class="form-group">
+                                    <label class="checkbox-label">
+                                        <input type="checkbox" id="jellyfinEnabled">
+                                        <span>Enabled</span>
+                                    </label>
+                                </div>
+                                <div class="form-group">
+                                    <button type="button" class="btn btn-secondary" onclick="testJellyfinConnection()">
+                                        <span id="jellyfinTestStatus"></span> Test Connection
+                                    </button>
+                                </div>
+                                <div class="form-group">
+                                    <label for="syncDays">Sync Playback History (Days)</label>
+                                    <input type="number" id="syncDays" class="form-control" value="30" min="1" max="365" style="max-width: 150px;">
+                                    <small class="form-help">Number of days of playback history to import from Jellyfin</small>
+                                </div>
+                                <div class="form-group">
+                                    <button type="button" class="btn btn-primary" onclick="syncJellyfinPlayback()">
+                                        <span id="jellyfinSyncStatus"></span> Sync Playback History
+                                    </button>
+                                </div>
+                                <div class="form-group">
+                                    <button type="button" class="btn btn-primary" onclick="saveJellyfinSettings()">
+                                        Save Jellyfin Settings
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div class="settings-section">
+                                <h4 style="margin-top: 0; margin-bottom: 1rem;">Global Rating Thresholds</h4>
+                                <div class="info-box" style="margin-bottom: 1.5rem; padding: 1rem; background-color: var(--bg-secondary); border-radius: 4px; border-left: 3px solid var(--primary-color);">
+                                    <p style="margin: 0 0 0.5rem 0; font-weight: 500;">Rating thresholds:</p>
+                                    <ul style="margin: 0; padding-left: 1.5rem; color: var(--text-secondary);">
+                                        <li><strong>Optimal:</strong> At least <span id="currentOptimalThreshold">8</span> clients can Direct Play</li>
+                                        <li><strong>Good:</strong> At least <span id="currentGoodDirectThreshold">5</span> clients can Direct Play, OR at least <span id="currentGoodCombinedThreshold">8</span> clients can Direct Play or Remux combined</li>
+                                        <li><strong>Poor:</strong> Fewer clients meet the "Good" criteria</li>
+                                    </ul>
+                                </div>
+                                <div class="form-group">
+                                    <label for="optimalThreshold">Optimal Rating Threshold (Direct Play clients)</label>
+                                    <input type="number" id="optimalThreshold" class="form-control" min="1" max="20" step="1">
+                                    <small class="form-help">Minimum number of clients that must support Direct Play for "Optimal" rating</small>
+                                </div>
+                                <div class="form-group">
+                                    <label for="goodDirectThreshold">Good Rating Threshold - Direct Play (clients)</label>
+                                    <input type="number" id="goodDirectThreshold" class="form-control" min="1" max="20" step="1">
+                                    <small class="form-help">Minimum Direct Play clients for "Good" rating (if combined threshold not met)</small>
+                                </div>
+                                <div class="form-group">
+                                    <label for="goodCombinedThreshold">Good Rating Threshold - Combined (Direct Play + Remux clients)</label>
+                                    <input type="number" id="goodCombinedThreshold" class="form-control" min="1" max="20" step="1">
+                                    <small class="form-help">Minimum combined Direct Play + Remux clients for "Good" rating</small>
+                                </div>
+                            </div>
+
+                            <div class="form-actions">
+                                <button type="submit" class="btn btn-primary">Save Settings</button>
+                            </div>
+
+                            <div class="settings-section">
+                                <h4>Client Compatibility Overrides</h4>
+                                <div class="info-box" style="margin-bottom: 1.5rem; padding: 1rem; background-color: var(--bg-secondary); border-radius: 4px; border-left: 3px solid var(--primary-color);">
+                                    <p style="margin: 0; font-size: 0.875rem; color: var(--text-secondary);">
+                                        Override default compatibility settings for specific codecs and clients. Changes will apply to newly analyzed videos. Use this to customize compatibility based on your specific client devices and versions.
+                                    </p>
+                                </div>
+                                <div id="compatibilitySettingsContainer">
+                                    <div class="loading-placeholder">Loading compatibility settings...</div>
+                                </div>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- Media Info Modal -->
+    <div id="mediaInfoModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="modalMediaTitle">Media Information</h3>
+                <button class="modal-close" onclick="closeMediaModal()">&times;</button>
+            </div>
+            <div class="modal-body" id="modalMediaContent">
+                <div class="loading-placeholder">Loading...</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Add Library Modal -->
+    <div id="addLibraryModal" class="modal">
+        <div class="modal-content modal-small">
+            <div class="modal-header">
+                <h3>Add Library</h3>
+                <button class="modal-close" onclick="closeAddLibraryModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form id="addLibraryForm" class="form">
+                    <div class="form-group">
+                        <label for="newLibraryName">Library Name</label>
+                        <input type="text" id="newLibraryName" class="form-control" placeholder="My Video Library" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="newLibraryPath">Library Path</label>
+                        <div style="display: flex; gap: 8px;">
+                            <input type="text" id="newLibraryPath" class="form-control" placeholder="/path/to/videos" required style="flex: 1;">
+                            <button type="button" class="btn btn-secondary" onclick="showPathBrowser()" style="white-space: nowrap;">Browse</button>
+                        </div>
+                        <small class="form-help">Enter a server path or use Browse to navigate directories</small>
+                    </div>
+                    <div class="form-group">
+                        <label for="newLibraryCategory">Category</label>
+                        <select id="newLibraryCategory" class="form-control" required>
+                            <option value="Misc">Misc</option>
+                            <option value="Movies">Movies</option>
+                            <option value="TV Shows">TV Shows</option>
+                        </select>
+                        <small class="form-help">Category helps organize your libraries</small>
+                    </div>
+                    <div class="form-actions">
+                        <button type="button" class="btn btn-secondary" onclick="closeAddLibraryModal()">Cancel</button>
+                        <button type="submit" class="btn btn-primary">Add & Scan</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- Path Browser Modal -->
+    <div id="pathBrowserModal" class="modal">
+        <div class="modal-content modal-medium">
+            <div class="modal-header">
+                <h3>Browse Directory</h3>
+                <button class="modal-close" onclick="closePathBrowser()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div style="margin-bottom: 1rem;">
+                    <div style="display: flex; gap: 8px; align-items: center;">
+                        <button type="button" class="btn btn-secondary" onclick="navigatePathBrowser('..')" id="pathBrowserUp" style="white-space: nowrap;">↑ Up</button>
+                        <input type="text" id="pathBrowserCurrent" class="form-control" readonly style="flex: 1; background-color: var(--bg-secondary);">
+                    </div>
+                </div>
+                <div id="pathBrowserContent" style="max-height: 400px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 4px; padding: 0.5rem;">
+                    <div class="loading-placeholder">Loading directories...</div>
+                </div>
+                <div style="margin-top: 1rem; display: flex; gap: 8px; justify-content: flex-end;">
+                    <button type="button" class="btn btn-secondary" onclick="closePathBrowser()">Cancel</button>
+                    <button type="button" class="btn btn-primary" onclick="selectPathFromBrowser()">Select This Path</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Client Compatibility Modal -->
+    <div id="clientCompatibilityModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="clientCompatibilityTitle">Client Compatibility</h3>
+                <button class="modal-close" onclick="closeClientCompatibilityModal()">&times;</button>
+            </div>
+            <div class="modal-body" id="clientCompatibilityContent">
+                <div class="loading-placeholder">Loading...</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Track Details Modal -->
+    <div id="trackDetailsModal" class="modal">
+        <div class="modal-content modal-medium">
+            <div class="modal-header">
+                <h3 id="trackDetailsTitle">Track Details</h3>
+                <button class="modal-close" onclick="closeTrackDetailsModal()">&times;</button>
+            </div>
+            <div class="modal-body" id="trackDetailsContent">
+                <div class="loading-placeholder">Loading track details...</div>
+            </div>
+        </div>
+    </div>
+
+    <script type="module" src="js/app.js"></script>
+</body>
+</html>
