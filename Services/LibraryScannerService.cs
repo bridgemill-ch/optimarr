@@ -93,6 +93,11 @@ namespace Optimarr.Services
             await _dbContext.SaveChangesAsync();
             _logger.LogInformation("Scan saved to database with ID: {ScanId}", scan.Id);
 
+            // Create cancellation token source for this scan immediately so it can be cancelled at any time
+            var cts = new CancellationTokenSource();
+            _scanCancellationTokens.TryAdd(scan.Id, cts);
+            _logger.LogInformation("Cancellation token created for scan ID: {ScanId}", scan.Id);
+
             // Start scan in background with proper error handling and DbContext scope
             _logger.LogInformation("Starting background scan task for scan ID: {ScanId}", scan.Id);
             var scanIdForTask = scan.Id; // Capture for closure
@@ -169,38 +174,43 @@ namespace Optimarr.Services
         {
             _logger.LogInformation("Cancelling scan: {ScanId}", scanId);
             
-            // Cancel the token for this specific scan
+            // Cancel the token for this specific scan if it exists
             if (_scanCancellationTokens.TryGetValue(scanId, out var cts))
             {
                 cts.Cancel();
                 _logger.LogInformation("Cancellation token triggered for scan: {ScanId}", scanId);
-                
-                // Immediately update scan status to Cancelled
-                try
-                {
-                    using var scope = _serviceScopeFactory?.CreateScope();
-                    if (scope != null)
-                    {
-                        var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-                        var scan = await dbContext.LibraryScans.FindAsync(scanId);
-                        if (scan != null && (scan.Status == ScanStatus.Running || scan.Status == ScanStatus.Pending))
-                        {
-                            scan.Status = ScanStatus.Cancelled;
-                            scan.CompletedAt = DateTime.UtcNow;
-                            scan.ErrorMessage = "Scan was cancelled by user";
-                            await dbContext.SaveChangesAsync();
-                            _logger.LogInformation("Scan {ScanId} status updated to Cancelled", scanId);
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "Error updating scan status to Cancelled for scan: {ScanId}", scanId);
-                }
             }
             else
             {
-                _logger.LogWarning("No cancellation token found for scan: {ScanId}", scanId);
+                _logger.LogWarning("No cancellation token found for scan: {ScanId} - scan may not have started yet or already completed", scanId);
+            }
+            
+            // Always try to update scan status to Cancelled in database (even if token doesn't exist)
+            // This handles cases where the scan hasn't started yet or the token was already cleaned up
+            try
+            {
+                using var scope = _serviceScopeFactory?.CreateScope();
+                if (scope != null)
+                {
+                    var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                    var scan = await dbContext.LibraryScans.FindAsync(scanId);
+                    if (scan != null && (scan.Status == ScanStatus.Running || scan.Status == ScanStatus.Pending))
+                    {
+                        scan.Status = ScanStatus.Cancelled;
+                        scan.CompletedAt = DateTime.UtcNow;
+                        scan.ErrorMessage = "Scan was cancelled by user";
+                        await dbContext.SaveChangesAsync();
+                        _logger.LogInformation("Scan {ScanId} status updated to Cancelled", scanId);
+                    }
+                    else if (scan != null)
+                    {
+                        _logger.LogInformation("Scan {ScanId} is already in status {Status}, cannot cancel", scanId, scan.Status);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error updating scan status to Cancelled for scan: {ScanId}", scanId);
             }
         }
 
@@ -225,14 +235,14 @@ namespace Optimarr.Services
                 Console.WriteLine($"[{DateTime.UtcNow:yyyy-MM-dd HH:mm:ss.fff}] Starting database query for scan {scanId}");
                 
                 // Add timeout to database query
-                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                using var dbQueryCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
                 var findStartTime = DateTime.UtcNow;
                 
                 LibraryScan? scan = null;
                 try
                 {
                     _logger.LogInformation("=== ExecuteScanAsync: Calling FindAsync with timeout ===");
-                    scan = await dbContext.LibraryScans.FindAsync(new object[] { scanId }, cts.Token);
+                    scan = await dbContext.LibraryScans.FindAsync(new object[] { scanId }, dbQueryCts.Token);
                     var findDuration = DateTime.UtcNow - findStartTime;
                     
                     Console.WriteLine($"[{DateTime.UtcNow:yyyy-MM-dd HH:mm:ss.fff}] Database query completed in {findDuration.TotalMilliseconds}ms for scan {scanId}");
@@ -258,10 +268,34 @@ namespace Optimarr.Services
                 _logger.LogInformation("=== ExecuteScanAsync: Scan record found - Path: {Path}, Status: {Status}, Started: {Started} ===", 
                     scan.LibraryPath, scan.Status, scan.StartedAt);
 
-                // Create cancellation token source for this specific scan
-                var cts = new CancellationTokenSource();
-                _scanCancellationTokens.TryAdd(scanId, cts);
+                // Check if scan was already cancelled in the database
+                if (scan.Status == ScanStatus.Cancelled)
+                {
+                    _logger.LogInformation("=== ExecuteScanAsync: Scan {ScanId} is already marked as Cancelled, exiting ===", scanId);
+                    return;
+                }
+
+                // Get or create cancellation token source for this specific scan
+                // (should already exist from StartScanAsync, but create if missing for backward compatibility)
+                if (!_scanCancellationTokens.TryGetValue(scanId, out var cts))
+                {
+                    _logger.LogWarning("=== ExecuteScanAsync: Cancellation token not found, creating new one for scan ID: {ScanId} ===", scanId);
+                    cts = new CancellationTokenSource();
+                    _scanCancellationTokens.TryAdd(scanId, cts);
+                }
                 var cancellationToken = cts.Token;
+                
+                // Check if scan was already cancelled before we started processing
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    _logger.LogInformation("=== ExecuteScanAsync: Scan {ScanId} was cancelled before processing started ===", scanId);
+                    scan.Status = ScanStatus.Cancelled;
+                    scan.CompletedAt = DateTime.UtcNow;
+                    scan.ErrorMessage = "Scan was cancelled before processing started";
+                    await dbContext.SaveChangesAsync();
+                    return;
+                }
+                
                 _scanStartTime = DateTime.UtcNow;
                 scan.CurrentProcessingFile = null;
                 await dbContext.SaveChangesAsync();
