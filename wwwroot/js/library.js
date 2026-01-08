@@ -213,9 +213,9 @@ function createScanProgressElement(scanId, libraryPath) {
         </div>
         <div class="progress-container">
             <div class="progress-bar">
-                <div id="scanProgressBar-${scanId}" class="progress-fill"></div>
+                <div id="scanProgressBar-${scanId}" class="progress-fill" style="width: 0%;"></div>
             </div>
-            <div class="progress-text" id="scanProgressText-${scanId}">0%</div>
+            <div class="progress-text" id="scanProgressText-${scanId}">Initializing...</div>
         </div>
         <div class="scan-details" id="scanDetails-${scanId}">
             <div class="detail-row">
@@ -303,14 +303,20 @@ export async function startScanPolling(scanId) {
             // Update progress bar
             const progressEl = document.getElementById(`scanProgressBar-${scanId}`);
             const progressTextEl = document.getElementById(`scanProgressText-${scanId}`);
-            if (progressEl && scan.totalFiles > 0) {
-                const percent = Math.round((scan.processedFiles / scan.totalFiles) * 100);
-                progressEl.style.width = percent + '%';
-                if (progressTextEl) {
-                    progressTextEl.textContent = `${scan.processedFiles} / ${scan.totalFiles} (${percent}%)`;
+            if (progressEl) {
+                if (scan.totalFiles > 0) {
+                    const percent = Math.round((scan.processedFiles / scan.totalFiles) * 100);
+                    progressEl.style.width = percent + '%';
+                    if (progressTextEl) {
+                        progressTextEl.textContent = `${scan.processedFiles} / ${scan.totalFiles} (${percent}%)`;
+                    }
+                } else {
+                    // Ensure progress bar is visible even when totalFiles is 0
+                    progressEl.style.width = '0%';
+                    if (progressTextEl) {
+                        progressTextEl.textContent = 'Initializing...';
+                    }
                 }
-            } else if (progressTextEl) {
-                progressTextEl.textContent = 'Initializing...';
             }
             
             // Update detail fields
