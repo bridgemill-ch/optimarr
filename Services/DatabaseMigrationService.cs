@@ -84,11 +84,19 @@ namespace Optimarr.Services
                     
                     await ApplySqlMigrationAsync(database, cancellationToken);
                     
+                    // Verify migration was successful by checking if column exists
+                    var migrationVerified = await CheckIfSqlMigrationNeededAsync(database, cancellationToken);
+                    if (migrationVerified)
+                    {
+                        // Migration was supposed to add the column, but it still doesn't exist
+                        throw new InvalidOperationException("SQL migration completed but ServarrType column was not created. Migration may have failed silently.");
+                    }
+                    
                     progress.AppliedMigrations = new List<string> { "AddServarrFields" };
                     progress.Status = "completed";
-                    progress.Message = "SQL migration applied successfully";
+                    progress.Message = "SQL migration applied and verified successfully";
                     progress.EndTime = DateTime.UtcNow;
-                    _logger.LogInformation("SQL migration applied successfully");
+                    _logger.LogInformation("SQL migration applied and verified successfully");
                     return;
                 }
 
