@@ -203,27 +203,42 @@ namespace Optimarr.Services
             {
                 Path.Combine(_hostEnvironment.ContentRootPath, "Data", "Migrations", "AddServarrFields.sql"),
                 Path.Combine(AppContext.BaseDirectory, "Data", "Migrations", "AddServarrFields.sql"),
-                Path.Combine(Directory.GetCurrentDirectory(), "Data", "Migrations", "AddServarrFields.sql")
+                Path.Combine(Directory.GetCurrentDirectory(), "Data", "Migrations", "AddServarrFields.sql"),
+                // Also try without Data subdirectory (in case it's copied to root)
+                Path.Combine(_hostEnvironment.ContentRootPath, "Migrations", "AddServarrFields.sql"),
+                Path.Combine(AppContext.BaseDirectory, "Migrations", "AddServarrFields.sql"),
+                Path.Combine(Directory.GetCurrentDirectory(), "Migrations", "AddServarrFields.sql")
             };
+            
+            // Log all paths being checked for debugging
+            _logger.LogDebug("Searching for migration file. ContentRootPath: {ContentRoot}, BaseDirectory: {BaseDir}, CurrentDirectory: {CurrentDir}",
+                _hostEnvironment.ContentRootPath, AppContext.BaseDirectory, Directory.GetCurrentDirectory());
             
             string? migrationFile = null;
             foreach (var path in possiblePaths)
             {
+                _logger.LogDebug("Checking path: {Path}, Exists: {Exists}", path, File.Exists(path));
                 if (File.Exists(path))
                 {
                     migrationFile = path;
+                    _logger.LogInformation("Found migration file at: {Path}", path);
                     break;
                 }
             }
             
+            string sql;
             if (migrationFile == null)
             {
                 var searchedPaths = string.Join(", ", possiblePaths);
-                throw new FileNotFoundException($"SQL migration file not found. Searched: {searchedPaths}");
+                _logger.LogWarning("SQL migration file not found in filesystem. Searched paths: {Paths}. Using embedded SQL as fallback.", searchedPaths);
+                // Fallback: Use embedded SQL if file not found
+                sql = GetEmbeddedMigrationSql();
             }
-            
-            _logger.LogInformation("Reading SQL migration from: {MigrationFile}", migrationFile);
-            var sql = await File.ReadAllTextAsync(migrationFile, cancellationToken);
+            else
+            {
+                _logger.LogInformation("Reading SQL migration from: {MigrationFile}", migrationFile);
+                sql = await File.ReadAllTextAsync(migrationFile, cancellationToken);
+            }
             
             if (string.IsNullOrWhiteSpace(sql))
             {
@@ -284,6 +299,83 @@ namespace Optimarr.Services
         public Task StopAsync(CancellationToken cancellationToken)
         {
             return Task.CompletedTask;
+        }
+
+        private string GetEmbeddedMigrationSql()
+        {
+            // Embedded SQL migration as fallback if file is not found
+            return @"BEGIN TRANSACTION;
+
+CREATE TABLE VideoAnalyses_new (
+    Id INTEGER PRIMARY KEY AUTOINCREMENT,
+    FilePath TEXT NOT NULL,
+    FileName TEXT NOT NULL DEFAULT '',
+    FileSize INTEGER NOT NULL DEFAULT 0,
+    Duration REAL NOT NULL DEFAULT 0,
+    Container TEXT NOT NULL DEFAULT '',
+    VideoCodec TEXT NOT NULL DEFAULT '',
+    VideoCodecTag TEXT NOT NULL DEFAULT '',
+    IsCodecTagCorrect INTEGER NOT NULL DEFAULT 1,
+    BitDepth INTEGER NOT NULL DEFAULT 8,
+    Width INTEGER NOT NULL DEFAULT 0,
+    Height INTEGER NOT NULL DEFAULT 0,
+    FrameRate REAL NOT NULL DEFAULT 0,
+    IsHDR INTEGER NOT NULL DEFAULT 0,
+    HDRType TEXT NOT NULL DEFAULT '',
+    IsFastStart INTEGER NOT NULL DEFAULT 0,
+    AudioCodecs TEXT NOT NULL DEFAULT '',
+    AudioTrackCount INTEGER NOT NULL DEFAULT 0,
+    AudioTracksJson TEXT NOT NULL DEFAULT '',
+    SubtitleFormats TEXT NOT NULL DEFAULT '',
+    SubtitleTrackCount INTEGER NOT NULL DEFAULT 0,
+    SubtitleTracksJson TEXT NOT NULL DEFAULT '',
+    OverallScore TEXT NOT NULL DEFAULT 'Unknown',
+    CompatibilityRating INTEGER NOT NULL DEFAULT 0,
+    DirectPlayClients INTEGER NOT NULL DEFAULT 0,
+    RemuxClients INTEGER NOT NULL DEFAULT 0,
+    TranscodeClients INTEGER NOT NULL DEFAULT 0,
+    Issues TEXT NOT NULL DEFAULT '',
+    Recommendations TEXT NOT NULL DEFAULT '',
+    ClientResults TEXT NOT NULL DEFAULT '',
+    FullReport TEXT NOT NULL DEFAULT '',
+    IsBroken INTEGER NOT NULL DEFAULT 0,
+    BrokenReason TEXT,
+    AnalyzedAt TEXT NOT NULL,
+    LibraryScanId INTEGER,
+    ServarrType TEXT,
+    SonarrSeriesId INTEGER,
+    SonarrSeriesTitle TEXT,
+    SonarrEpisodeId INTEGER,
+    SonarrEpisodeNumber INTEGER,
+    SonarrSeasonNumber INTEGER,
+    RadarrMovieId INTEGER,
+    RadarrMovieTitle TEXT,
+    RadarrYear INTEGER,
+    ServarrMatchedAt TEXT,
+    FOREIGN KEY (LibraryScanId) REFERENCES LibraryScans(Id) ON DELETE CASCADE
+);
+
+INSERT INTO VideoAnalyses_new 
+SELECT 
+    Id, FilePath, FileName, FileSize, Duration, Container, VideoCodec, VideoCodecTag,
+    IsCodecTagCorrect, BitDepth, Width, Height, FrameRate, IsHDR, HDRType, IsFastStart,
+    AudioCodecs, AudioTrackCount, AudioTracksJson, SubtitleFormats, SubtitleTrackCount,
+    SubtitleTracksJson, OverallScore, CompatibilityRating, DirectPlayClients, RemuxClients,
+    TranscodeClients, Issues, Recommendations, ClientResults, FullReport, IsBroken, BrokenReason,
+    AnalyzedAt, LibraryScanId,
+    NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL
+FROM VideoAnalyses;
+
+DROP TABLE VideoAnalyses;
+
+ALTER TABLE VideoAnalyses_new RENAME TO VideoAnalyses;
+
+CREATE INDEX IF NOT EXISTS IX_VideoAnalyses_FilePath ON VideoAnalyses(FilePath);
+CREATE INDEX IF NOT EXISTS IX_VideoAnalyses_LibraryScanId ON VideoAnalyses(LibraryScanId);
+CREATE INDEX IF NOT EXISTS IX_VideoAnalyses_AnalyzedAt ON VideoAnalyses(AnalyzedAt);
+CREATE INDEX IF NOT EXISTS IX_VideoAnalyses_OverallScore ON VideoAnalyses(OverallScore);
+
+COMMIT;";
         }
     }
 
