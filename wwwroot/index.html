@@ -371,36 +371,8 @@
                         <h3>Scan Progress</h3>
                     </div>
                     <div class="box-content">
-                        <div class="progress-container">
-                            <div class="progress-bar">
-                                <div id="scanProgressBar" class="progress-fill"></div>
-                            </div>
-                            <div id="scanStatus" class="progress-text"></div>
-                            <div id="scanDetails" class="scan-details">
-                                <div class="detail-row">
-                                    <span class="detail-label">Current File:</span>
-                                    <span id="currentFile" class="detail-value">-</span>
-                                </div>
-                                <div class="detail-row">
-                                    <span class="detail-label">Speed:</span>
-                                    <span id="scanSpeed" class="detail-value">-</span>
-                                </div>
-                                <div class="detail-row">
-                                    <span class="detail-label">Elapsed:</span>
-                                    <span id="scanElapsed" class="detail-value">-</span>
-                                </div>
-                                <div class="detail-row">
-                                    <span class="detail-label">Remaining:</span>
-                                    <span id="scanRemaining" class="detail-value">-</span>
-                                </div>
-                            </div>
-                            <div id="scanErrors" class="scan-errors" style="display: none;">
-                                <div class="errors-header">
-                                    <strong>Errors (<span id="errorCount">0</span>)</strong>
-                                    <button id="toggleErrors" class="toggle-btn">Show</button>
-                                </div>
-                                <div id="errorsList" class="errors-list" style="display: none;"></div>
-                            </div>
+                        <div id="scanProgressContainer">
+                            <!-- Multiple scan progress items will be dynamically added here -->
                         </div>
                     </div>
                 </div>

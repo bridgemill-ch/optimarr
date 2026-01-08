@@ -178,8 +178,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 closeAddLibraryModal();
                 addLibraryForm.reset();
                 
-                // Show scan progress
-                document.getElementById('scanProgress').style.display = 'block';
+                // Show scan progress (startScanPolling will handle displaying)
                 startScanPolling(scan.id);
                 
                 // Reload libraries

@@ -174,6 +174,9 @@ export async function loadRecentScans() {
     }
 }
 
+// Track active scan polling intervals
+const activeScanIntervals = new Map();
+
 export async function reconnectToRunningScans() {
     try {
         const response = await fetch('/api/library/scans');
@@ -184,13 +187,71 @@ export async function reconnectToRunningScans() {
             scan.status === 'Running' || scan.status === 'Pending'
         );
         
-        if (runningScans.length > 0) {
-            const latestRunningScan = runningScans[0];
-            console.log(`Reconnecting to running scan: ${latestRunningScan.id}`);
-            startScanPolling(latestRunningScan.id);
-        }
+        // Start polling for all running scans
+        runningScans.forEach(scan => {
+            if (!activeScanIntervals.has(scan.id)) {
+                console.log(`Reconnecting to running scan: ${scan.id}`);
+                startScanPolling(scan.id);
+            }
+        });
     } catch (error) {
         console.error('Error checking for running scans:', error);
+    }
+}
+
+function createScanProgressElement(scanId, libraryPath) {
+    const container = document.getElementById('scanProgressContainer');
+    if (!container) return null;
+    
+    const scanElement = document.createElement('div');
+    scanElement.className = 'scan-progress-item';
+    scanElement.id = `scanProgressItem-${scanId}`;
+    scanElement.innerHTML = `
+        <div class="scan-progress-header">
+            <h4 class="scan-progress-title">${escapeHtml(libraryPath)}</h4>
+            <span class="scan-progress-status" id="scanStatus-${scanId}">Running</span>
+        </div>
+        <div class="progress-container">
+            <div class="progress-bar">
+                <div id="scanProgressBar-${scanId}" class="progress-fill"></div>
+            </div>
+            <div class="progress-text" id="scanProgressText-${scanId}">0%</div>
+        </div>
+        <div class="scan-details" id="scanDetails-${scanId}">
+            <div class="detail-row">
+                <span class="detail-label">Current File:</span>
+                <span id="currentFile-${scanId}" class="detail-value">-</span>
+            </div>
+            <div class="detail-row">
+                <span class="detail-label">Speed:</span>
+                <span id="scanSpeed-${scanId}" class="detail-value">-</span>
+            </div>
+            <div class="detail-row">
+                <span class="detail-label">Elapsed:</span>
+                <span id="scanElapsed-${scanId}" class="detail-value">-</span>
+            </div>
+            <div class="detail-row">
+                <span class="detail-label">Remaining:</span>
+                <span id="scanRemaining-${scanId}" class="detail-value">-</span>
+            </div>
+        </div>
+    `;
+    
+    container.appendChild(scanElement);
+    return scanElement;
+}
+
+function removeScanProgressElement(scanId) {
+    const element = document.getElementById(`scanProgressItem-${scanId}`);
+    if (element) {
+        element.remove();
+    }
+    
+    // Hide progress container if no more scans
+    const container = document.getElementById('scanProgressContainer');
+    const progressDiv = document.getElementById('scanProgress');
+    if (container && progressDiv && container.children.length === 0) {
+        progressDiv.style.display = 'none';
     }
 }
 
@@ -198,39 +259,65 @@ export async function startScanPolling(scanId) {
     const progressDiv = document.getElementById('scanProgress');
     if (!progressDiv) return;
     
+    // If already polling this scan, don't start again
+    if (activeScanIntervals.has(scanId)) {
+        return;
+    }
+    
     progressDiv.style.display = 'block';
+    
+    // Get scan info to create progress element
+    let libraryPath = 'Unknown';
+    try {
+        const scanResponse = await fetch(`/api/library/scans/${scanId}`);
+        if (scanResponse.ok) {
+            const scan = await scanResponse.json();
+            libraryPath = scan.libraryPath || 'Unknown';
+        }
+    } catch (error) {
+        console.error('Error fetching scan info:', error);
+    }
+    
+    // Create progress element for this scan
+    createScanProgressElement(scanId, libraryPath);
     
     const pollInterval = setInterval(async () => {
         try {
             const response = await fetch(`/api/library/scans/${scanId}`);
             if (!response.ok) {
                 clearInterval(pollInterval);
+                activeScanIntervals.delete(scanId);
+                removeScanProgressElement(scanId);
                 return;
             }
             
             const scan = await response.json();
-            const statusEl = document.getElementById('scanStatus');
-            const progressEl = document.getElementById('scanProgressBar');
-            const currentFileEl = document.getElementById('currentFile');
-            const speedEl = document.getElementById('scanSpeed');
-            const elapsedEl = document.getElementById('scanElapsed');
-            const remainingEl = document.getElementById('scanRemaining');
             
+            // Update status
+            const statusEl = document.getElementById(`scanStatus-${scanId}`);
             if (statusEl) {
                 statusEl.textContent = scan.status || 'Running';
+                statusEl.className = `scan-progress-status ${(scan.status || 'Running').toLowerCase()}`;
             }
             
+            // Update progress bar
+            const progressEl = document.getElementById(`scanProgressBar-${scanId}`);
+            const progressTextEl = document.getElementById(`scanProgressText-${scanId}`);
             if (progressEl && scan.totalFiles > 0) {
                 const percent = Math.round((scan.processedFiles / scan.totalFiles) * 100);
                 progressEl.style.width = percent + '%';
-                progressEl.textContent = `${scan.processedFiles} / ${scan.totalFiles} (${percent}%)`;
+                if (progressTextEl) {
+                    progressTextEl.textContent = `${scan.processedFiles} / ${scan.totalFiles} (${percent}%)`;
+                }
+            } else if (progressTextEl) {
+                progressTextEl.textContent = 'Initializing...';
             }
             
             // Update detail fields
+            const currentFileEl = document.getElementById(`currentFile-${scanId}`);
             if (currentFileEl) {
                 const fileName = scan.currentFile || scan.lastAnalyzedFile;
                 if (fileName && fileName !== 'Initializing...') {
-                    // Extract just the filename from the path if it's a full path
                     const displayName = fileName.includes('/') || fileName.includes('\\') 
                         ? fileName.split(/[/\\]/).pop() 
                         : fileName;
@@ -240,6 +327,7 @@ export async function startScanPolling(scanId) {
                 }
             }
             
+            const speedEl = document.getElementById(`scanSpeed-${scanId}`);
             if (speedEl) {
                 if (scan.filesPerSecond && scan.filesPerSecond > 0) {
                     speedEl.textContent = `${scan.filesPerSecond.toFixed(2)} files/sec`;
@@ -248,53 +336,59 @@ export async function startScanPolling(scanId) {
                 }
             }
             
+            const elapsedEl = document.getElementById(`scanElapsed-${scanId}`);
             if (elapsedEl) {
                 elapsedEl.textContent = formatTimeSpan(scan.elapsedTime);
             }
             
+            const remainingEl = document.getElementById(`scanRemaining-${scanId}`);
             if (remainingEl) {
                 remainingEl.textContent = formatTimeSpan(scan.estimatedTimeRemaining);
             }
             
+            // Handle scan completion
             if (scan.status === 'Completed' || scan.status === 'Failed') {
                 clearInterval(pollInterval);
-                console.log(`Scan ${scan.status.toLowerCase()}, refreshing dashboard...`);
+                activeScanIntervals.delete(scanId);
                 
-                loadKnownLibraries();
-                loadRecentScans();
+                console.log(`Scan ${scanId} ${scan.status.toLowerCase()}, refreshing dashboard...`);
                 
-                // Reload browse media if on browse tab
-                const activeTab = document.querySelector('.nav-item.active');
-                if (activeTab && activeTab.getAttribute('data-tab') === 'browse') {
-                    loadBrowseMedia();
+                // Update status to show completion
+                if (statusEl) {
+                    statusEl.textContent = scan.status;
+                    statusEl.className = `scan-progress-status ${scan.status.toLowerCase()}`;
                 }
                 
-                // Refresh dashboard to show updated stats
-                // Add a delay to ensure database has been updated (increased to 2 seconds)
+                // Remove progress element after a delay
                 setTimeout(() => {
-                    console.log('Refreshing dashboard after scan completion...');
-                    loadDashboard().catch(err => {
-                        console.error('Failed to refresh dashboard:', err);
-                    });
-                }, 2000);
-                
-                // Also refresh again after a longer delay to catch any late database updates
-                setTimeout(() => {
-                    console.log('Secondary dashboard refresh after scan completion...');
-                    loadDashboard().catch(err => {
-                        console.error('Failed to refresh dashboard (secondary):', err);
-                    });
-                }, 5000);
-                
-                setTimeout(() => {
-                    progressDiv.style.display = 'none';
-                }, 5000);
+                    removeScanProgressElement(scanId);
+                    
+                    // Refresh data
+                    loadKnownLibraries();
+                    loadRecentScans();
+                    
+                    const activeTab = document.querySelector('.nav-item.active');
+                    if (activeTab && activeTab.getAttribute('data-tab') === 'browse') {
+                        loadBrowseMedia();
+                    }
+                    
+                    // Refresh dashboard
+                    setTimeout(() => {
+                        loadDashboard().catch(err => {
+                            console.error('Failed to refresh dashboard:', err);
+                        });
+                    }, 2000);
+                }, 3000);
             }
         } catch (error) {
-            console.error('Error polling scan status:', error);
+            console.error(`Error polling scan ${scanId} status:`, error);
             clearInterval(pollInterval);
+            activeScanIntervals.delete(scanId);
+            removeScanProgressElement(scanId);
         }
     }, 2000); // Poll every 2 seconds
+    
+    activeScanIntervals.set(scanId, pollInterval);
 }
 
 export function updateErrorsDisplay(failedFiles) {

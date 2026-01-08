@@ -1878,6 +1878,72 @@ body {
     margin-bottom: 0.5rem;
 }
 
+#scanProgressContainer {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+}
+
+.scan-progress-item {
+    background-color: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 1rem;
+    transition: all 0.2s ease;
+}
+
+.scan-progress-item:hover {
+    border-color: var(--accent-color);
+}
+
+.scan-progress-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.75rem;
+    gap: 1rem;
+}
+
+.scan-progress-title {
+    font-size: 0.9375rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin: 0;
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.scan-progress-status {
+    font-size: 0.75rem;
+    font-weight: 600;
+    padding: 0.25rem 0.5rem;
+    border-radius: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    flex-shrink: 0;
+}
+
+.scan-progress-status.running,
+.scan-progress-status.pending {
+    background-color: rgba(39, 174, 96, 0.2);
+    color: var(--success-color);
+    border: 1px solid var(--success-color);
+}
+
+.scan-progress-status.completed {
+    background-color: rgba(39, 174, 96, 0.2);
+    color: var(--success-color);
+    border: 1px solid var(--success-color);
+}
+
+.scan-progress-status.failed {
+    background-color: rgba(231, 76, 60, 0.2);
+    color: var(--error-color);
+    border: 1px solid var(--error-color);
+}
+
 .scan-meta {
     font-size: 0.875rem;
     color: var(--text-secondary);
