@@ -1912,6 +1912,24 @@ body {
     gap: 1rem;
 }
 
+.scan-progress-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.scan-cancel-btn {
+    padding: 0.25rem 0.5rem;
+    font-size: 0.875rem;
+    min-width: auto;
+    flex-shrink: 0;
+}
+
+.scan-cancel-btn .icon {
+    font-size: 0.875rem;
+    line-height: 1;
+}
+
 .scan-progress-title {
     font-size: 0.9375rem;
     font-weight: 600;
@@ -1950,6 +1968,18 @@ body {
     background-color: rgba(231, 76, 60, 0.2);
     color: var(--error-color);
     border: 1px solid var(--error-color);
+}
+
+.scan-progress-status.cancelling {
+    background-color: rgba(255, 193, 7, 0.2);
+    color: var(--warning-color);
+    border: 1px solid var(--warning-color);
+}
+
+.scan-progress-status.cancelled {
+    background-color: rgba(158, 158, 158, 0.2);
+    color: var(--text-secondary);
+    border: 1px solid var(--border-color);
 }
 
 .scan-meta {

@@ -209,7 +209,12 @@ function createScanProgressElement(scanId, libraryPath) {
     scanElement.innerHTML = `
         <div class="scan-progress-header">
             <h4 class="scan-progress-title">${escapeHtml(libraryPath)}</h4>
-            <span class="scan-progress-status" id="scanStatus-${scanId}">Running</span>
+            <div class="scan-progress-header-actions">
+                <span class="scan-progress-status" id="scanStatus-${scanId}">Running</span>
+                <button class="btn btn-sm btn-danger scan-cancel-btn" id="cancelScanBtn-${scanId}" onclick="cancelScan(${scanId})" title="Cancel Scan">
+                    <span class="icon">✕</span>
+                </button>
+            </div>
         </div>
         <div class="progress-container">
             <div class="progress-bar">
@@ -299,9 +304,20 @@ export async function startScanPolling(scanId) {
             
             // Update status
             const statusEl = document.getElementById(`scanStatus-${scanId}`);
+            const cancelBtn = document.getElementById(`cancelScanBtn-${scanId}`);
             if (statusEl) {
-                statusEl.textContent = scan.status || 'Running';
-                statusEl.className = `scan-progress-status ${(scan.status || 'Running').toLowerCase()}`;
+                const status = scan.status || 'Running';
+                statusEl.textContent = status;
+                statusEl.className = `scan-progress-status ${status.toLowerCase()}`;
+                
+                // Show/hide cancel button based on status
+                if (cancelBtn) {
+                    if (status === 'Running' || status === 'Pending') {
+                        cancelBtn.style.display = 'inline-flex';
+                    } else {
+                        cancelBtn.style.display = 'none';
+                    }
+                }
             }
             
             // Update progress bar
@@ -356,8 +372,8 @@ export async function startScanPolling(scanId) {
                 remainingEl.textContent = formatTimeSpan(scan.estimatedTimeRemaining);
             }
             
-            // Handle scan completion
-            if (scan.status === 'Completed' || scan.status === 'Failed') {
+            // Handle scan completion or cancellation
+            if (scan.status === 'Completed' || scan.status === 'Failed' || scan.status === 'Cancelled') {
                 clearInterval(pollInterval);
                 activeScanIntervals.delete(scanId);
                 
@@ -428,7 +444,47 @@ export function updateErrorsDisplay(failedFiles) {
     }).join('');
 }
 
+export async function cancelScan(scanId) {
+    if (!confirm('Are you sure you want to cancel this scan?')) {
+        return;
+    }
+    
+    try {
+        const response = await fetch(`/api/library/scans/${scanId}/cancel`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            }
+        });
+        
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.error || 'Failed to cancel scan');
+        }
+        
+        // Update UI to show cancellation requested
+        const statusEl = document.getElementById(`scanStatus-${scanId}`);
+        const cancelBtn = document.getElementById(`cancelScanBtn-${scanId}`);
+        
+        if (statusEl) {
+            statusEl.textContent = 'Cancelling...';
+            statusEl.className = 'scan-progress-status cancelling';
+        }
+        
+        if (cancelBtn) {
+            cancelBtn.disabled = true;
+            cancelBtn.style.opacity = '0.5';
+        }
+        
+        console.log(`Scan ${scanId} cancellation requested`);
+    } catch (error) {
+        console.error('Cancel scan error:', error);
+        alert(`Error cancelling scan: ${error.message}`);
+    }
+}
+
 // Export to window for onclick handlers
 window.rescanLibrary = rescanLibrary;
 window.deleteLibrary = deleteLibrary;
+window.cancelScan = cancelScan;
 
