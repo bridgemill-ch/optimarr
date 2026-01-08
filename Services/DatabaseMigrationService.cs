@@ -238,10 +238,31 @@ namespace Optimarr.Services
                         libraryScanColumnExists = Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken)) > 0;
                     }
                     
-                    var migrationNeeded = !servarrColumnExists || (libraryScansExists && !libraryScanColumnExists);
+                    // Check if Servarr-related columns exist in LibraryPaths
+                    command.CommandText = @"
+                        SELECT COUNT(*) FROM sqlite_master 
+                        WHERE type='table' AND name='LibraryPaths'";
                     
-                    _logger.LogDebug("Migration check: ServarrType exists={ServarrExists}, CurrentProcessingFile exists={CurrentFileExists}, Migration needed={Needed}",
-                        servarrColumnExists, libraryScanColumnExists, migrationNeeded);
+                    var libraryPathsExists = Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken)) > 0;
+                    var libraryPathServarrColumnsExist = true; // Default to true if table doesn't exist
+                    
+                    if (libraryPathsExists)
+                    {
+                        // Check for all Servarr-related columns
+                        command.CommandText = @"
+                            SELECT COUNT(*) FROM pragma_table_info('LibraryPaths') 
+                            WHERE name IN ('ServarrType', 'ServarrRootFolderId', 'ServarrRootFolderPath', 'LastSyncedAt')";
+                        
+                        var servarrColumnCount = Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken));
+                        libraryPathServarrColumnsExist = servarrColumnCount == 4; // All 4 columns must exist
+                    }
+                    
+                    var migrationNeeded = !servarrColumnExists || 
+                                         (libraryScansExists && !libraryScanColumnExists) ||
+                                         (libraryPathsExists && !libraryPathServarrColumnsExist);
+                    
+                    _logger.LogDebug("Migration check: ServarrType exists={ServarrExists}, CurrentProcessingFile exists={CurrentFileExists}, LibraryPaths Servarr columns exist={LibraryPathExists}, Migration needed={Needed}",
+                        servarrColumnExists, libraryScanColumnExists, libraryPathServarrColumnsExist, migrationNeeded);
                     
                     return migrationNeeded;
                 }
@@ -419,6 +440,37 @@ namespace Optimarr.Services
                     else
                     {
                         _logger.LogDebug("CurrentProcessingFile column already exists in LibraryScans");
+                    }
+                    
+                    // Add Servarr-related columns to LibraryPaths if needed
+                    var libraryPathColumns = new[]
+                    {
+                        ("ServarrType", "TEXT"),
+                        ("ServarrRootFolderId", "INTEGER"),
+                        ("ServarrRootFolderPath", "TEXT"),
+                        ("LastSyncedAt", "TEXT")
+                    };
+                    
+                    foreach (var (columnName, columnType) in libraryPathColumns)
+                    {
+                        checkCommand.CommandText = $@"
+                            SELECT COUNT(*) FROM pragma_table_info('LibraryPaths') 
+                            WHERE name='{columnName}'";
+                        
+                        var columnExists = Convert.ToInt32(await checkCommand.ExecuteScalarAsync(cancellationToken)) > 0;
+                        
+                        if (!columnExists)
+                        {
+                            _logger.LogInformation("Adding {Column} column to LibraryPaths table", columnName);
+                            using var addColumnCommand = connection.CreateCommand();
+                            addColumnCommand.Transaction = transaction;
+                            addColumnCommand.CommandText = $"ALTER TABLE LibraryPaths ADD COLUMN {columnName} {columnType}";
+                            await addColumnCommand.ExecuteNonQueryAsync(cancellationToken);
+                        }
+                        else
+                        {
+                            _logger.LogDebug("{Column} column already exists in LibraryPaths", columnName);
+                        }
                     }
                     
                     await transaction.CommitAsync(cancellationToken);
