@@ -8,20 +8,7 @@ RUN dotnet restore
 
 # Copy everything else and build
 COPY . .
-RUN dotnet publish -c Release -o /app/publish --no-restore || (echo "ERROR: dotnet publish failed" && exit 1)
-RUN echo "Verifying publish output exists..." && \
-    if [ ! -d /app/publish ]; then \
-        echo "ERROR: /app/publish directory was not created!" && \
-        exit 1; \
-    fi && \
-    echo "Publish output directory exists. Contents:" && \
-    ls -la /app/publish/ | head -20 && \
-    echo "" && \
-    echo "Checking for MediaInfo native libraries in publish output..." && \
-    find /app/publish -name "*mediainfo*" -o -name "*MediaInfo*" 2>/dev/null | head -20 || echo "No MediaInfo files in publish output" && \
-    echo "" && \
-    echo "Checking runtimes folder structure..." && \
-    find /app/publish/runtimes -type f 2>/dev/null | head -20 || echo "No runtimes folder found"
+RUN dotnet publish -c Release -o /app/publish --no-restore
 
 # Runtime stage
 FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS runtime
@@ -30,15 +17,16 @@ FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS runtime
 LABEL org.opencontainers.image.title="Optimarr"
 LABEL org.opencontainers.image.description="A web-based application for analyzing video files to determine their compatibility with media server clients"
 LABEL org.opencontainers.image.vendor="Optimarr"
-LABEL org.opencontainers.image.version="0.0.1"
-LABEL org.opencontainers.image.url="https://github.com/yourusername/optimarr"
-LABEL org.opencontainers.image.documentation="https://github.com/yourusername/optimarr/blob/main/README.md"
-LABEL org.opencontainers.image.source="https://github.com/yourusername/optimarr"
+LABEL org.opencontainers.image.version="1.1.2"
+LABEL org.opencontainers.image.url="https://github.com/bridgemill-ch/optimarr"
+LABEL org.opencontainers.image.documentation="https://github.com/bridgemill-ch/optimarr/blob/main/README.md"
+LABEL org.opencontainers.image.source="https://github.com/bridgemill-ch/optimarr"
 LABEL org.opencontainers.image.licenses="MIT"
 
 WORKDIR /app
 
 # Install MediaInfo CLI tool, curl for healthcheck, and gosu for user switching
+# Create non-root user and directories in a single layer
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         mediainfo \
@@ -46,31 +34,21 @@ RUN apt-get update && \
         curl \
         gosu && \
     rm -rf /var/lib/apt/lists/* && \
-    apt-get clean
-
-# Verify MediaInfo CLI is installed
-RUN mediainfo --Version || echo "Warning: MediaInfo CLI not found"
-
-# Create a non-root user for security
-RUN groupadd -r optimarr && useradd -r -g optimarr -u 1000 optimarr && \
-    mkdir -p /app/config /app/data /app/logs
+    apt-get clean && \
+    groupadd -r optimarr && \
+    useradd -r -g optimarr -u 1000 optimarr && \
+    mkdir -p /app/config /app/data /app/logs && \
+    mediainfo --Version
 
 # Copy published app
 COPY --from=build /app/publish .
 
-# Verify mediainfo CLI is available
-RUN echo "=== MediaInfo CLI Verification ===" && \
-    mediainfo --Version && \
-    echo "✓ MediaInfo CLI installed successfully"
-
-# Copy appsettings.json to config folder as default configuration
-# This ensures the config folder has a default configuration file
-# If the host mounts a config folder, it will override this
-COPY appsettings.json /app/config/appsettings.json
+# Copy appsettings.json as default configuration (stored outside config dir to avoid being hidden by mounts)
+# Entrypoint will copy this to /app/config/appsettings.json if the mounted config folder is empty
+COPY appsettings.json /app/appsettings.json.default
 
 # Copy entrypoint script (needs to be owned by root to run as root initially)
-COPY docker-entrypoint.sh /usr/local/bin/
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+COPY --chmod=755 docker-entrypoint.sh /usr/local/bin/
 
 # Set ownership of app files (entrypoint stays root-owned)
 RUN chown -R optimarr:optimarr /app
