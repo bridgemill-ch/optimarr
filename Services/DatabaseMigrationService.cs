@@ -311,11 +311,12 @@ namespace Optimarr.Services
             
             try
             {
-                // Remove comments first
+                // Remove comment lines (lines starting with --)
                 var lines = sql.Split('\n')
                     .Where(line => !line.Trim().StartsWith("--", StringComparison.OrdinalIgnoreCase))
                     .ToList();
                 
+                // Join lines back together, preserving structure
                 var cleanedSql = string.Join("\n", lines);
                 
                 // Remove BEGIN TRANSACTION and COMMIT as we handle them manually
@@ -323,24 +324,29 @@ namespace Optimarr.Services
                     .Replace("BEGIN TRANSACTION", "", StringComparison.OrdinalIgnoreCase)
                     .Replace("COMMIT", "", StringComparison.OrdinalIgnoreCase);
                 
-                // Split by semicolon - this should work for SQLite
-                // But we need to be careful - semicolons inside parentheses should be preserved
-                // For now, simple split should work since SQLite statements end with semicolon
-                var rawStatements = sqlWithoutTransactions
+                // Normalize whitespace - replace newlines with spaces for easier parsing
+                // But preserve the structure by keeping single spaces
+                var normalizedSql = sqlWithoutTransactions
+                    .Replace("\r\n", " ")
+                    .Replace("\n", " ")
+                    .Replace("\r", " ");
+                
+                // Split by semicolon - SQLite statements end with semicolon
+                var rawStatements = normalizedSql
                     .Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries)
                     .Select(s => s.Trim())
                     .Where(s => !string.IsNullOrWhiteSpace(s))
                     .ToList();
                 
-                _logger.LogInformation("Split SQL into {Count} raw statements", rawStatements.Count);
+                _logger.LogInformation("Split SQL into {Count} statements", rawStatements.Count);
                 
-                // Log first 100 chars of each statement for debugging
+                // Log preview of each statement for debugging
                 for (int i = 0; i < rawStatements.Count; i++)
                 {
-                    var preview = rawStatements[i].Length > 100 
-                        ? rawStatements[i].Substring(0, 100) + "..." 
+                    var preview = rawStatements[i].Length > 150 
+                        ? rawStatements[i].Substring(0, 150) + "..." 
                         : rawStatements[i];
-                    _logger.LogDebug("Statement {Index}: {Preview}", i + 1, preview);
+                    _logger.LogInformation("Statement {Index}/{Total}: {Preview}", i + 1, rawStatements.Count, preview);
                 }
                 
                 var statements = rawStatements;
