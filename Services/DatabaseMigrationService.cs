@@ -311,15 +311,27 @@ namespace Optimarr.Services
             
             try
             {
+                // Remove comments and clean up SQL
+                var cleanedSql = string.Join("\n", sql.Split('\n')
+                    .Where(line => !line.Trim().StartsWith("--", StringComparison.OrdinalIgnoreCase))
+                    .Select(line => line.Trim()));
+                
                 // SQLite requires statements to be executed separately
-                // Split by semicolon but preserve transaction boundaries
-                var statements = sql.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries)
+                // Split by semicolon, but be careful with multi-line statements
+                // First, remove BEGIN TRANSACTION and COMMIT as we handle them manually
+                var sqlWithoutTransactions = cleanedSql
+                    .Replace("BEGIN TRANSACTION", "", StringComparison.OrdinalIgnoreCase)
+                    .Replace("COMMIT", "", StringComparison.OrdinalIgnoreCase);
+                
+                // Split by semicolon and filter out empty statements
+                var statements = sqlWithoutTransactions
+                    .Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries)
                     .Select(s => s.Trim())
-                    .Where(s => !string.IsNullOrWhiteSpace(s) && 
-                                !s.StartsWith("--", StringComparison.OrdinalIgnoreCase))
+                    .Where(s => !string.IsNullOrWhiteSpace(s))
                     .ToList();
                 
                 _logger.LogInformation("Split SQL into {Count} statements", statements.Count);
+                _logger.LogDebug("Statements: {Statements}", string.Join(" | ", statements.Select((s, i) => $"{i + 1}: {s.Substring(0, Math.Min(50, s.Length))}...")));
                 
                 using var transaction = await connection.BeginTransactionAsync(cancellationToken);
                 try
