@@ -7,6 +7,7 @@ using Optimarr.Data;
 using Optimarr.Models;
 using Optimarr.Services;
 using System.IO;
+using System.Linq;
 using System.Security;
 
 namespace Optimarr.Controllers
@@ -236,26 +237,54 @@ namespace Optimarr.Controllers
                     return NotFound(new { error = $"Library path with ID {id} not found" });
                 }
 
-                // Get all scans for this library path
-                var scans = await _dbContext.LibraryScans
-                    .Where(s => s.LibraryPath == libraryPath.Path)
+                var libraryPathValue = libraryPath.Path;
+                _logger.LogInformation("Starting bulk delete for library path: {Path}", libraryPathValue);
+
+                // Get scan IDs first (just IDs, not full objects)
+                var scanIds = await _dbContext.LibraryScans
+                    .Where(s => s.LibraryPath == libraryPathValue)
+                    .Select(s => s.Id)
                     .ToListAsync();
 
-                // Delete all video analyses associated with these scans
-                foreach (var scan in scans)
-                {
-                    var videos = await _dbContext.VideoAnalyses
-                        .Where(v => v.LibraryScanId == scan.Id)
-                        .ToListAsync();
-                    _dbContext.VideoAnalyses.RemoveRange(videos);
-                }
+                _logger.LogInformation("Found {Count} scans to delete", scanIds.Count);
 
-                // Delete all scans
-                _dbContext.LibraryScans.RemoveRange(scans);
+                if (scanIds.Count > 0)
+                {
+                    // Delete scans using raw SQL - CASCADE deletes will automatically handle
+                    // VideoAnalyses and FailedFiles (configured in AppDbContext)
+                    // Delete in batches to avoid SQLite parameter limits and improve performance
+                    const int batchSize = 500; // Conservative batch size for SQLite
+                    int totalScansDeleted = 0;
+                    
+                    for (int i = 0; i < scanIds.Count; i += batchSize)
+                    {
+                        var batch = scanIds.Skip(i).Take(batchSize).ToList();
+                        var batchNumber = (i / batchSize) + 1;
+                        var totalBatches = (scanIds.Count + batchSize - 1) / batchSize;
+                        
+                        _logger.LogInformation("Deleting scans batch {Batch}/{Total} ({Count} scans)", 
+                            batchNumber, totalBatches, batch.Count);
+                        
+                        // Use parameterized query to avoid SQL injection (though IDs are safe)
+                        // SQLite doesn't support array parameters well, so we'll use string interpolation
+                        // but only with integer IDs from the database (safe)
+                        var scanIdsParam = string.Join(",", batch);
+                        var deleteScansSql = $@"
+                            DELETE FROM LibraryScans 
+                            WHERE Id IN ({scanIdsParam})";
+                        
+                        var scansDeleted = await _dbContext.Database.ExecuteSqlRawAsync(deleteScansSql);
+                        totalScansDeleted += scansDeleted;
+                        
+                        _logger.LogInformation("Deleted {Count} scans in batch {Batch} (CASCADE deleted related VideoAnalyses and FailedFiles)", 
+                            scansDeleted, batchNumber);
+                    }
+                    
+                    _logger.LogInformation("Total scans deleted: {Count} (with CASCADE deletes for related data)", totalScansDeleted);
+                }
 
                 // Delete the library path
                 _dbContext.LibraryPaths.Remove(libraryPath);
-
                 await _dbContext.SaveChangesAsync();
 
                 _logger.LogInformation("Library path {Id} deleted successfully", id);
