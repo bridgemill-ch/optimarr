@@ -311,31 +311,43 @@ namespace Optimarr.Services
             
             try
             {
-                // Remove comment lines (lines starting with --)
+                // Remove full-line comments (lines that are ONLY comments)
+                // But preserve inline comments within statements (they'll be ignored by SQLite)
                 var lines = sql.Split('\n')
-                    .Where(line => !line.Trim().StartsWith("--", StringComparison.OrdinalIgnoreCase))
+                    .Select(line => 
+                    {
+                        var trimmed = line.Trim();
+                        // Only remove lines that are entirely comments (start with -- and have nothing else meaningful)
+                        if (trimmed.StartsWith("--", StringComparison.OrdinalIgnoreCase) && 
+                            trimmed.Length < 100) // Short comments are likely standalone
+                        {
+                            return string.Empty; // Remove standalone comment lines
+                        }
+                        return line; // Keep the line (may have inline comments, that's OK)
+                    })
+                    .Where(line => !string.IsNullOrWhiteSpace(line))
                     .ToList();
                 
-                // Join lines back together, preserving structure
-                var cleanedSql = string.Join("\n", lines);
+                // Join lines back together
+                var cleanedSql = string.Join(" ", lines);
                 
                 // Remove BEGIN TRANSACTION and COMMIT as we handle them manually
                 var sqlWithoutTransactions = cleanedSql
                     .Replace("BEGIN TRANSACTION", "", StringComparison.OrdinalIgnoreCase)
                     .Replace("COMMIT", "", StringComparison.OrdinalIgnoreCase);
                 
-                // Normalize whitespace - replace newlines with spaces for easier parsing
-                // But preserve the structure by keeping single spaces
-                var normalizedSql = sqlWithoutTransactions
-                    .Replace("\r\n", " ")
-                    .Replace("\n", " ")
-                    .Replace("\r", " ");
+                // Normalize multiple spaces to single space
+                while (sqlWithoutTransactions.Contains("  "))
+                {
+                    sqlWithoutTransactions = sqlWithoutTransactions.Replace("  ", " ");
+                }
                 
                 // Split by semicolon - SQLite statements end with semicolon
-                var rawStatements = normalizedSql
+                var rawStatements = sqlWithoutTransactions
                     .Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries)
                     .Select(s => s.Trim())
-                    .Where(s => !string.IsNullOrWhiteSpace(s))
+                    .Where(s => !string.IsNullOrWhiteSpace(s) && 
+                                !s.StartsWith("--", StringComparison.OrdinalIgnoreCase))
                     .ToList();
                 
                 _logger.LogInformation("Split SQL into {Count} statements", rawStatements.Count);
@@ -343,8 +355,8 @@ namespace Optimarr.Services
                 // Log preview of each statement for debugging
                 for (int i = 0; i < rawStatements.Count; i++)
                 {
-                    var preview = rawStatements[i].Length > 150 
-                        ? rawStatements[i].Substring(0, 150) + "..." 
+                    var preview = rawStatements[i].Length > 200 
+                        ? rawStatements[i].Substring(0, 200) + "..." 
                         : rawStatements[i];
                     _logger.LogInformation("Statement {Index}/{Total}: {Preview}", i + 1, rawStatements.Count, preview);
                 }
