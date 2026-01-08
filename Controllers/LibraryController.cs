@@ -1042,64 +1042,76 @@ namespace Optimarr.Controllers
         [HttpGet("settings/compatibility")]
         public ActionResult<object> GetCompatibilitySettings()
         {
-            // Get enabled clients (filter out disabled ones)
-            var allClients = JellyfinCompatibilityData.AllClients;
-            var disabledClientsSection = _configuration?.GetSection("CompatibilityRating:DisabledClients");
-            var enabledClients = new List<string>();
-            
-            foreach (var client in allClients)
+            try
             {
-                var isDisabled = disabledClientsSection?.GetValue<bool>(client) ?? false;
-                if (!isDisabled)
+                // Get enabled clients (filter out disabled ones)
+                var allClients = JellyfinCompatibilityData.AllClients;
+                var disabledClientsSection = _configuration?.GetSection("CompatibilityRating:DisabledClients");
+                var enabledClients = new List<string>();
+                
+                foreach (var client in allClients)
                 {
-                    enabledClients.Add(client);
+                    var isDisabled = disabledClientsSection?.GetValue<bool>(client) ?? false;
+                    if (!isDisabled)
+                    {
+                        enabledClients.Add(client);
+                    }
                 }
-            }
-            
-            // If all clients are disabled, enable all by default
-            if (enabledClients.Count == 0)
-            {
-                enabledClients = allClients.ToList();
-            }
-            
-            // Get default compatibility data
-            var videoCodecs = JellyfinCompatibilityData.VideoCodecSupport;
-            var audioCodecs = JellyfinCompatibilityData.AudioCodecSupport;
-            var containers = JellyfinCompatibilityData.ContainerSupport;
-            var subtitles = JellyfinCompatibilityData.SubtitleSupport;
-            var clients = enabledClients.ToArray();
-
-            // Get custom overrides from configuration
-            var overridesSection = _configuration.GetSection("CompatibilityOverrides");
-            List<CompatibilityOverride> overrides;
-            if (overridesSection.Exists())
-            {
-                overrides = overridesSection.Get<List<CompatibilityOverride>>() ?? new List<CompatibilityOverride>();
-            }
-            else
-            {
-                overrides = new List<CompatibilityOverride>();
-            }
-
-            // Build response with defaults and overrides
-            var response = new
-            {
-                clients = clients,
-                videoCodecs = videoCodecs.Keys.ToList(),
-                audioCodecs = audioCodecs.Keys.ToList(),
-                containers = containers.Keys.ToList(),
-                subtitleFormats = subtitles.Keys.ToList(),
-                defaults = new
+                
+                // If all clients are disabled, enable all by default
+                if (enabledClients.Count == 0)
                 {
-                    video = videoCodecs,
-                    audio = audioCodecs,
-                    container = containers,
-                    subtitle = subtitles
-                },
-                overrides = overrides
-            };
+                    enabledClients = allClients.ToList();
+                }
+                
+                // Get default compatibility data
+                var videoCodecs = JellyfinCompatibilityData.VideoCodecSupport;
+                var audioCodecs = JellyfinCompatibilityData.AudioCodecSupport;
+                var containers = JellyfinCompatibilityData.ContainerSupport;
+                var subtitles = JellyfinCompatibilityData.SubtitleSupport;
+                var clients = enabledClients.ToArray();
 
-            return Ok(response);
+                // Get custom overrides from configuration with error handling
+                List<CompatibilityOverride> overrides = new List<CompatibilityOverride>();
+                try
+                {
+                    var overridesSection = _configuration.GetSection("CompatibilityOverrides");
+                    if (overridesSection.Exists())
+                    {
+                        overrides = overridesSection.Get<List<CompatibilityOverride>>() ?? new List<CompatibilityOverride>();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Error reading compatibility overrides from configuration, using empty list");
+                    overrides = new List<CompatibilityOverride>();
+                }
+
+                // Build response with defaults and overrides
+                var response = new
+                {
+                    clients = clients,
+                    videoCodecs = videoCodecs.Keys.ToList(),
+                    audioCodecs = audioCodecs.Keys.ToList(),
+                    containers = containers.Keys.ToList(),
+                    subtitleFormats = subtitles.Keys.ToList(),
+                    defaults = new
+                    {
+                        video = videoCodecs,
+                        audio = audioCodecs,
+                        container = containers,
+                        subtitle = subtitles
+                    },
+                    overrides = overrides
+                };
+
+                return Ok(response);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error getting compatibility settings");
+                return StatusCode(500, new { error = "Failed to load compatibility settings. Please try again." });
+            }
         }
 
         [HttpPost("settings/compatibility")]
@@ -1137,14 +1149,38 @@ namespace Optimarr.Controllers
                     ? await System.IO.File.ReadAllTextAsync(appsettingsPath) 
                     : "{}";
 
+                // Validate JSON before parsing
+                try
+                {
+                    using var _ = System.Text.Json.JsonDocument.Parse(jsonContent);
+                }
+                catch (System.Text.Json.JsonException ex)
+                {
+                    _logger.LogError(ex, "Invalid JSON in appsettings.json before update");
+                    throw new InvalidOperationException("Invalid JSON in configuration file. Please fix the file manually.", ex);
+                }
+
                 // Parse JSON and update the CompatibilityOverrides section
-                using var jsonDoc = System.Text.Json.JsonDocument.Parse(jsonContent);
-                var root = System.Text.Json.Nodes.JsonNode.Parse(jsonContent) ?? new System.Text.Json.Nodes.JsonObject();
+                var root = System.Text.Json.Nodes.JsonNode.Parse(jsonContent);
+                if (root == null)
+                {
+                    root = new System.Text.Json.Nodes.JsonObject();
+                }
 
                 // Update CompatibilityOverrides section
                 var overridesArray = new System.Text.Json.Nodes.JsonArray();
                 foreach (var overrideItem in overrides)
                 {
+                    if (string.IsNullOrEmpty(overrideItem.Codec) || 
+                        string.IsNullOrEmpty(overrideItem.Client) || 
+                        string.IsNullOrEmpty(overrideItem.SupportLevel) || 
+                        string.IsNullOrEmpty(overrideItem.Category))
+                    {
+                        _logger.LogWarning("Skipping invalid override: Codec={Codec}, Client={Client}, SupportLevel={SupportLevel}, Category={Category}", 
+                            overrideItem.Codec, overrideItem.Client, overrideItem.SupportLevel, overrideItem.Category);
+                        continue;
+                    }
+
                     var overrideObj = new System.Text.Json.Nodes.JsonObject
                     {
                         ["Codec"] = overrideItem.Codec,
@@ -1157,22 +1193,56 @@ namespace Optimarr.Controllers
 
                 root["CompatibilityOverrides"] = overridesArray;
 
-                // Write back to file
+                // Write back to file with proper formatting
                 var options = new System.Text.Json.JsonSerializerOptions
                 {
-                    WriteIndented = true
+                    WriteIndented = true,
+                    Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
                 };
                 var updatedJson = root.ToJsonString(options);
+                
+                // Validate the JSON we're about to write
+                try
+                {
+                    using var _ = System.Text.Json.JsonDocument.Parse(updatedJson);
+                }
+                catch (System.Text.Json.JsonException ex)
+                {
+                    _logger.LogError(ex, "Generated invalid JSON when saving compatibility overrides");
+                    throw new InvalidOperationException("Failed to generate valid JSON. Please try again.", ex);
+                }
+
                 await System.IO.File.WriteAllTextAsync(appsettingsPath, updatedJson);
+                _logger.LogInformation("Compatibility overrides written to {Path}", appsettingsPath);
+
+                // Wait a moment to ensure file is fully written
+                await System.Threading.Tasks.Task.Delay(100);
 
                 // Reload configuration if IConfigurationRoot is available
-                if (_configuration is Microsoft.Extensions.Configuration.IConfigurationRoot configRoot)
+                try
                 {
-                    configRoot.Reload();
+                    if (_configuration is Microsoft.Extensions.Configuration.IConfigurationRoot configRoot)
+                    {
+                        configRoot.Reload();
+                        _logger.LogInformation("Configuration reloaded successfully");
+                        
+                        // Verify the reload worked by checking if we can read the overrides
+                        await System.Threading.Tasks.Task.Delay(50);
+                        var verifySection = configRoot.GetSection("CompatibilityOverrides");
+                        if (verifySection.Exists())
+                        {
+                            var verifyOverrides = verifySection.Get<List<CompatibilityOverride>>();
+                            _logger.LogInformation("Verified configuration reload: {Count} overrides found", verifyOverrides?.Count ?? 0);
+                        }
+                    }
+                    else
+                    {
+                        _logger.LogWarning("Configuration is not IConfigurationRoot, cannot reload. Changes may not take effect until restart.");
+                    }
                 }
-                else
+                catch (Exception reloadEx)
                 {
-                    _logger.LogWarning("Configuration is not IConfigurationRoot, cannot reload. Changes may not take effect until restart.");
+                    _logger.LogWarning(reloadEx, "Failed to reload configuration, but settings were saved. Changes may require restart to take effect.");
                 }
 
                 _logger.LogInformation("Compatibility overrides saved: {Count} overrides", overrides.Count);

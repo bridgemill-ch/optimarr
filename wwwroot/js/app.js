@@ -4,7 +4,7 @@ import { loadDashboard } from './dashboard.js';
 import { loadKnownLibraries, loadRecentScans, startScanPolling, reconnectToRunningScans } from './library.js';
 import { loadBrowseFilterOptions, loadBrowseMedia, setupBrowseEventListeners } from './browse.js';
 import { loadRatingSettings, loadCompatibilitySettings, saveSettings, loadJellyfinSettings, loadSonarrSettings, loadRadarrSettings, loadSonarrPathMappings, loadRadarrPathMappings } from './settings.js';
-import { loadServarrStatus } from './servarr.js';
+import { loadServarrStatus, checkActiveMatches } from './servarr.js';
 import { showAddLibraryModal, closeAddLibraryModal } from './library-modals.js';
 import { closeMediaModal, closeClientCompatibilityModal, closeTrackDetailsModal } from './media-info.js';
 import { closePathBrowser as closePathBrowserModal } from './path-browser.js';
@@ -112,6 +112,10 @@ document.addEventListener('DOMContentLoaded', function() {
     
     // Load Servarr status on page load
     loadServarrStatus();
+    
+    // Check for active matches and resume if needed
+    checkActiveMatches();
+    
     loadAppVersion();
     
     // Load dashboard on page load

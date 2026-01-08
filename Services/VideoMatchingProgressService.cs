@@ -35,20 +35,42 @@ namespace Optimarr.Services
 
         public VideoMatchingProgress? GetProgress(string matchId)
         {
-            _progress.TryGetValue(matchId, out var progress);
-            return progress;
+            if (_progress.TryGetValue(matchId, out var progress))
+            {
+                // Create a snapshot to avoid returning a reference that might be modified
+                lock (progress)
+                {
+                    return new VideoMatchingProgress
+                    {
+                        Status = progress.Status,
+                        Total = progress.Total,
+                        Processed = progress.Processed,
+                        Matched = progress.Matched,
+                        Errors = progress.Errors,
+                        CurrentItem = progress.CurrentItem,
+                        ErrorMessage = progress.ErrorMessage,
+                        StartTime = progress.StartTime,
+                        EndTime = progress.EndTime
+                    };
+                }
+            }
+            return null;
         }
 
         public void UpdateProgress(string matchId, int processed, int total, int matched, int errors, string? currentItem = null)
         {
             if (_progress.TryGetValue(matchId, out var progress))
             {
-                progress.Processed = processed;
-                progress.Total = total;
-                progress.Matched = matched;
-                progress.Errors = errors;
-                progress.CurrentItem = currentItem;
-                progress.Status = "running";
+                // Update atomically to prevent flickering
+                lock (progress)
+                {
+                    progress.Processed = processed;
+                    progress.Total = total;
+                    progress.Matched = matched;
+                    progress.Errors = errors;
+                    progress.CurrentItem = currentItem;
+                    progress.Status = "running";
+                }
             }
         }
 
@@ -56,10 +78,13 @@ namespace Optimarr.Services
         {
             if (_progress.TryGetValue(matchId, out var progress))
             {
-                progress.Status = "completed";
-                progress.Matched = matched;
-                progress.Errors = errors;
-                progress.EndTime = DateTime.UtcNow;
+                lock (progress)
+                {
+                    progress.Status = "completed";
+                    progress.Matched = matched;
+                    progress.Errors = errors;
+                    progress.EndTime = DateTime.UtcNow;
+                }
                 _logger.LogDebug("Completed progress tracker for match {MatchId}: {Matched} matched, {Errors} errors", 
                     matchId, matched, errors);
             }
@@ -69,9 +94,12 @@ namespace Optimarr.Services
         {
             if (_progress.TryGetValue(matchId, out var progress))
             {
-                progress.Status = "error";
-                progress.ErrorMessage = errorMessage;
-                progress.EndTime = DateTime.UtcNow;
+                lock (progress)
+                {
+                    progress.Status = "error";
+                    progress.ErrorMessage = errorMessage;
+                    progress.EndTime = DateTime.UtcNow;
+                }
                 _logger.LogWarning("Failed progress tracker for match {MatchId}: {Error}", matchId, errorMessage);
             }
         }
@@ -80,6 +108,48 @@ namespace Optimarr.Services
         {
             _progress.TryRemove(matchId, out _);
             _logger.LogDebug("Removed progress tracker for match {MatchId}", matchId);
+        }
+
+        // Get all active (running) matches
+        public List<VideoMatchingProgress> GetActiveMatches()
+        {
+            return _progress
+                .Where(kvp => kvp.Value.Status == "running")
+                .Select(kvp =>
+                {
+                    lock (kvp.Value)
+                    {
+                        return new VideoMatchingProgress
+                        {
+                            Status = kvp.Value.Status,
+                            Total = kvp.Value.Total,
+                            Processed = kvp.Value.Processed,
+                            Matched = kvp.Value.Matched,
+                            Errors = kvp.Value.Errors,
+                            CurrentItem = kvp.Value.CurrentItem,
+                            ErrorMessage = kvp.Value.ErrorMessage,
+                            StartTime = kvp.Value.StartTime,
+                            EndTime = kvp.Value.EndTime
+                        };
+                    }
+                })
+                .ToList();
+        }
+
+        // Get match ID by status (for finding active matches)
+        public string? GetActiveMatchId()
+        {
+            foreach (var kvp in _progress)
+            {
+                lock (kvp.Value)
+                {
+                    if (kvp.Value.Status == "running")
+                    {
+                        return kvp.Key;
+                    }
+                }
+            }
+            return null;
         }
 
         // Cleanup old completed progress (older than 1 hour)

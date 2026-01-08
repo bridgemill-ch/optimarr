@@ -801,6 +801,32 @@ namespace Optimarr.Controllers
             return Ok(progress);
         }
 
+        [HttpGet("match-videos/active")]
+        public ActionResult<object> GetActiveMatches()
+        {
+            try
+            {
+                var activeMatchId = _progressService.GetActiveMatchId();
+                if (activeMatchId == null)
+                {
+                    return Ok(new { activeMatchId = null, hasActiveMatch = false });
+                }
+
+                var progress = _progressService.GetProgress(activeMatchId);
+                return Ok(new 
+                { 
+                    activeMatchId = activeMatchId,
+                    hasActiveMatch = true,
+                    progress = progress
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error getting active matches");
+                return StatusCode(500, new { error = ex.Message });
+            }
+        }
+
         [HttpPost("match-videos/{libraryPathId}")]
         public async Task<ActionResult> MatchVideosForLibraryPath(int libraryPathId)
         {

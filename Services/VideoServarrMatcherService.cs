@@ -190,6 +190,12 @@ namespace Optimarr.Services
             {
                 progressService.UpdateProgress(matchId, 0, totalVideos, 0, 0, "Pre-loading Servarr data...");
             }
+            
+            // Update progress after Servarr data is loaded
+            if (progressService != null && matchId != null)
+            {
+                progressService.UpdateProgress(matchId, 0, totalVideos, 0, 0, "Starting video matching...");
+            }
 
             // Pre-load Servarr data to avoid repeated API calls
             _logger.LogInformation("Pre-loading Servarr data...");
@@ -288,11 +294,26 @@ namespace Optimarr.Services
             const int videoBatchSize = 500; // Process videos in batches of 500 to reduce memory usage
             const int saveBatchSize = 50; // Save every 50 videos
             const int logInterval = 100; // Log progress every 100 videos
-            const int progressUpdateInterval = 25; // Update progress every 25 videos
+            const int progressUpdateInterval = 10; // Update progress every 10 videos (more frequent for better UX)
             const int maxConcurrency = 10; // Maximum concurrent video matching operations
 
             var matchingSemaphore = new SemaphoreSlim(maxConcurrency, maxConcurrency);
             var processedLock = new object();
+            
+            // Helper method to update progress (called from within lock)
+            void UpdateProgressIfNeeded(int currentProcessed, int currentTotal, int currentMatched, int currentErrors, string? currentItem = null)
+            {
+                if (progressService != null && matchId != null)
+                {
+                    // Always update on first video, then every N videos, or if it's been a while
+                    if (currentProcessed == 1 || 
+                        currentProcessed % progressUpdateInterval == 0 || 
+                        currentProcessed == currentTotal)
+                    {
+                        progressService.UpdateProgress(matchId, currentProcessed, currentTotal, currentMatched, currentErrors, currentItem);
+                    }
+                }
+            }
 
             // Process videos in batches to reduce memory usage
             int skip = 0;
@@ -346,12 +367,8 @@ namespace Optimarr.Services
                                 }
                                 processedCount++;
 
-                                // Update progress tracking
-                                if (progressService != null && matchId != null && processedCount % progressUpdateInterval == 0)
-                                {
-                                    var fileName = System.IO.Path.GetFileName(video.FilePath);
-                                    progressService.UpdateProgress(matchId, processedCount, totalVideos, matchedCount, errorCount, fileName);
-                                }
+                                var fileName = System.IO.Path.GetFileName(video.FilePath);
+                                UpdateProgressIfNeeded(processedCount, totalVideos, matchedCount, errorCount, fileName);
 
                                 // Log progress at intervals
                                 if (processedCount % logInterval == 0)
@@ -364,10 +381,11 @@ namespace Optimarr.Services
                         }
                         else
                         {
-                            // Video already matched, just increment counter
+                            // Video already matched, just increment counter and update progress
                             lock (processedLock)
                             {
                                 processedCount++;
+                                UpdateProgressIfNeeded(processedCount, totalVideos, matchedCount, errorCount);
                             }
                         }
                     }
@@ -391,9 +409,12 @@ namespace Optimarr.Services
                 // Save changes after processing each batch
                 await _dbContext.SaveChangesAsync();
                 
-                // Log batch completion
+                // Update progress after each batch completes
                 lock (processedLock)
                 {
+                    // Always update progress after batch completion to ensure UI reflects current state
+                    UpdateProgressIfNeeded(processedCount, totalVideos, matchedCount, errorCount);
+                    
                     if (processedCount % saveBatchSize < videoBatchSize || processedCount % logInterval < videoBatchSize)
                     {
                         _logger.LogInformation("Progress: {Processed}/{Total} videos processed, {Matched} matched so far", 
@@ -521,7 +542,6 @@ namespace Optimarr.Services
             var processedCount = 0;
             var errorCount = 0;
             const int videoBatchSize = 500;
-            const int saveBatchSize = 50;
             const int maxConcurrency = 10;
 
             var matchingSemaphore = new SemaphoreSlim(maxConcurrency, maxConcurrency);

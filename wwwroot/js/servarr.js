@@ -1,6 +1,86 @@
 // Servarr Integration Functions
 import { escapeHtml } from './utils.js';
 
+// Check for active matches on page load and resume polling
+export async function checkActiveMatches() {
+    try {
+        // First check localStorage for stored matchId
+        const storedMatchId = localStorage.getItem('activeMatchId');
+        
+        if (storedMatchId) {
+            // Verify the match is still active on the server
+            const response = await fetch(`/api/servarr/match-videos/progress/${storedMatchId}`);
+            if (response.ok) {
+                const progress = await response.json();
+                if (progress.status === 'running') {
+                    // Match is still active, resume polling
+                    console.log('Resuming active match:', storedMatchId);
+                    const button = document.querySelector('button[onclick="matchVideosWithServarr()"]');
+                    const statusSpan = document.getElementById('matchVideosStatus') || 
+                                     document.getElementById('matchVideosStatusSonarr') || 
+                                     document.getElementById('matchVideosStatusRadarr');
+                    const originalButtonText = button ? button.textContent.trim() : 'Match Videos';
+                    
+                    if (button) {
+                        button.disabled = true;
+                        button.style.opacity = '0.7';
+                        const statusSpanInButton = button.querySelector('span[id^="matchVideosStatus"]');
+                        if (statusSpanInButton) {
+                            statusSpanInButton.textContent = '🔄';
+                        } else {
+                            button.textContent = 'Matching...';
+                        }
+                    }
+                    
+                    // Resume polling
+                    pollMatchProgress(storedMatchId, statusSpan, button, originalButtonText);
+                    return;
+                } else {
+                    // Match completed or errored, clear localStorage
+                    localStorage.removeItem('activeMatchId');
+                }
+            } else {
+                // Match not found, clear localStorage
+                localStorage.removeItem('activeMatchId');
+            }
+        }
+        
+        // Also check server for any active matches (in case localStorage was cleared)
+        const activeResponse = await fetch('/api/servarr/match-videos/active');
+        if (activeResponse.ok) {
+            const activeData = await activeResponse.json();
+            if (activeData.hasActiveMatch && activeData.activeMatchId) {
+                // Store the active matchId
+                localStorage.setItem('activeMatchId', activeData.activeMatchId);
+                
+                // Resume polling
+                const button = document.querySelector('button[onclick="matchVideosWithServarr()"]');
+                const statusSpan = document.getElementById('matchVideosStatus') || 
+                                 document.getElementById('matchVideosStatusSonarr') || 
+                                 document.getElementById('matchVideosStatusRadarr');
+                const originalButtonText = button ? button.textContent.trim() : 'Match Videos';
+                
+                if (button) {
+                    button.disabled = true;
+                    button.style.opacity = '0.7';
+                    const statusSpanInButton = button.querySelector('span[id^="matchVideosStatus"]');
+                    if (statusSpanInButton) {
+                        statusSpanInButton.textContent = '🔄';
+                    } else {
+                        button.textContent = 'Matching...';
+                    }
+                }
+                
+                pollMatchProgress(activeData.activeMatchId, statusSpan, button, originalButtonText);
+            }
+        }
+    } catch (error) {
+        console.error('Error checking for active matches:', error);
+        // Clear localStorage on error to avoid getting stuck
+        localStorage.removeItem('activeMatchId');
+    }
+}
+
 export async function loadServarrStatus() {
     try {
         // Add timeout to fetch
@@ -172,7 +252,7 @@ export function updateJellyfinStatusBadge(enabled, connected) {
 
 export async function loadJellyfinClients() {
     try {
-        const response = await fetch('/api/playback/clients');
+        const response = await fetch('/api/playback/clients/used');
         if (!response.ok) {
             // If endpoint fails or no data, hide the section
             const box = document.getElementById('jellyfinClientsBox');
@@ -662,6 +742,9 @@ export async function matchVideosWithServarr() {
         const result = await response.json();
         
         if (result.matchId) {
+            // Store matchId in localStorage to survive page reloads
+            localStorage.setItem('activeMatchId', result.matchId);
+            
             // Start polling for progress
             await pollMatchProgress(result.matchId, activeStatusSpan, button, originalButtonText);
         } else {
@@ -742,6 +825,9 @@ async function pollMatchProgress(matchId, statusSpan, button, originalButtonText
             }
             
             if (progress.status === 'completed') {
+                // Clear localStorage when match completes
+                localStorage.removeItem('activeMatchId');
+                
                 if (statusSpan) statusSpan.textContent = '✓ Matched';
                 alert(`Video matching completed!\n\nProcessed: ${progress.processed} videos\nMatched: ${progress.matched} videos${progress.errors > 0 ? `\nErrors: ${progress.errors}` : ''}`);
                 
@@ -762,6 +848,9 @@ async function pollMatchProgress(matchId, statusSpan, button, originalButtonText
             }
             
             if (progress.status === 'error') {
+                // Clear localStorage when match errors
+                localStorage.removeItem('activeMatchId');
+                
                 if (statusSpan) statusSpan.textContent = '✗ Error';
                 alert(`Error matching videos: ${progress.errorMessage || 'Unknown error'}`);
                 if (button) {

@@ -550,6 +550,165 @@ namespace Optimarr.Controllers
         }
 
         [HttpGet("clients")]
+        public ActionResult<object> GetClients()
+        {
+            try
+            {
+                // Get all available Jellyfin clients for compatibility settings
+                var allClients = Services.JellyfinCompatibilityData.AllClients.ToList();
+                
+                // Get disabled clients from configuration
+                var disabledClientsSection = _configuration?.GetSection("CompatibilityRating:DisabledClients");
+                var clients = new Dictionary<string, bool>();
+                
+                foreach (var client in allClients)
+                {
+                    var isDisabled = disabledClientsSection?.GetValue<bool>(client) ?? false;
+                    clients[client] = !isDisabled; // true = enabled, false = disabled
+                }
+
+                return Ok(new
+                {
+                    clients = clients,
+                    allClients = allClients
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error getting clients");
+                return StatusCode(500, new { error = ex.Message });
+            }
+        }
+
+        [HttpPost("clients")]
+        public async Task<ActionResult> SaveClientSettings([FromBody] ClientSettingsRequest request)
+        {
+            try
+            {
+                // Get the path to appsettings.json
+                var contentRoot = _environment.ContentRootPath;
+                var configAppsettingsPath = System.IO.Path.Combine(contentRoot, "config", "appsettings.json");
+                var rootAppsettingsPath = System.IO.Path.Combine(contentRoot, "appsettings.json");
+                
+                string appsettingsPath;
+                if (System.IO.File.Exists(configAppsettingsPath))
+                {
+                    appsettingsPath = configAppsettingsPath;
+                }
+                else if (System.IO.File.Exists(rootAppsettingsPath))
+                {
+                    appsettingsPath = rootAppsettingsPath;
+                }
+                else
+                {
+                    appsettingsPath = configAppsettingsPath;
+                }
+
+                // Ensure directory exists
+                if (!System.IO.Directory.Exists(System.IO.Path.GetDirectoryName(appsettingsPath)))
+                {
+                    System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(appsettingsPath)!);
+                }
+
+                // Read existing configuration
+                var jsonContent = System.IO.File.Exists(appsettingsPath) 
+                    ? await System.IO.File.ReadAllTextAsync(appsettingsPath) 
+                    : "{}";
+
+                // Validate JSON before parsing
+                try
+                {
+                    using var _ = System.Text.Json.JsonDocument.Parse(jsonContent);
+                }
+                catch (System.Text.Json.JsonException ex)
+                {
+                    _logger.LogError(ex, "Invalid JSON in appsettings.json before update");
+                    throw new InvalidOperationException("Invalid JSON in configuration file. Please fix the file manually.", ex);
+                }
+
+                // Parse JSON and update the CompatibilityRating:DisabledClients section
+                var root = System.Text.Json.Nodes.JsonNode.Parse(jsonContent);
+                if (root == null)
+                {
+                    root = new System.Text.Json.Nodes.JsonObject();
+                }
+
+                // Get all available clients
+                var allClients = Services.JellyfinCompatibilityData.AllClients.ToList();
+                
+                // Create or update CompatibilityRating section
+                if (root["CompatibilityRating"] == null)
+                {
+                    root["CompatibilityRating"] = new System.Text.Json.Nodes.JsonObject();
+                }
+                
+                var compatibilityRating = root["CompatibilityRating"]!.AsObject();
+                
+                // Create or update DisabledClients section
+                var disabledClients = new System.Text.Json.Nodes.JsonObject();
+                
+                foreach (var client in allClients)
+                {
+                    // Client is disabled if it's not in the request or if it's explicitly set to false
+                    var isEnabled = request.Clients != null && request.Clients.TryGetValue(client, out var enabled) && enabled;
+                    disabledClients[client] = !isEnabled;
+                }
+                
+                compatibilityRating["DisabledClients"] = disabledClients;
+
+                // Write back to file
+                var options = new System.Text.Json.JsonSerializerOptions
+                {
+                    WriteIndented = true,
+                    Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+                };
+                var updatedJson = root.ToJsonString(options);
+                
+                // Validate the JSON we're about to write
+                try
+                {
+                    using var _ = System.Text.Json.JsonDocument.Parse(updatedJson);
+                }
+                catch (System.Text.Json.JsonException ex)
+                {
+                    _logger.LogError(ex, "Generated invalid JSON when saving client settings");
+                    throw new InvalidOperationException("Failed to generate valid JSON. Please try again.", ex);
+                }
+
+                await System.IO.File.WriteAllTextAsync(appsettingsPath, updatedJson);
+                _logger.LogInformation("Client settings written to {Path}", appsettingsPath);
+
+                // Wait a moment to ensure file is fully written
+                await System.Threading.Tasks.Task.Delay(100);
+
+                // Reload configuration
+                try
+                {
+                    if (_configuration is Microsoft.Extensions.Configuration.IConfigurationRoot configRoot)
+                    {
+                        configRoot.Reload();
+                        _logger.LogInformation("Configuration reloaded successfully");
+                    }
+                }
+                catch (Exception reloadEx)
+                {
+                    _logger.LogWarning(reloadEx, "Failed to reload configuration, but settings were saved. Changes may require restart to take effect.");
+                }
+
+                _logger.LogInformation("Client settings saved: {EnabledCount} enabled, {DisabledCount} disabled", 
+                    request.Clients?.Count(c => c.Value) ?? 0,
+                    allClients.Count - (request.Clients?.Count(c => c.Value) ?? 0));
+
+                return Ok(new { message = "Client settings saved successfully. Changes will apply to newly analyzed videos." });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error saving client settings");
+                return StatusCode(500, new { error = $"Failed to save client settings: {ex.Message}" });
+            }
+        }
+
+        [HttpGet("clients/used")]
         public async Task<ActionResult<object>> GetUsedClients()
         {
             try
@@ -796,6 +955,11 @@ namespace Optimarr.Controllers
         public string? Username { get; set; }
         public string? Password { get; set; }
         public bool Enabled { get; set; }
+    }
+
+    public class ClientSettingsRequest
+    {
+        public Dictionary<string, bool>? Clients { get; set; }
     }
 }
 
