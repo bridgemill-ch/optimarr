@@ -809,7 +809,7 @@ namespace Optimarr.Controllers
                 var activeMatchId = _progressService.GetActiveMatchId();
                 if (activeMatchId == null)
                 {
-                    return Ok(new { activeMatchId = null, hasActiveMatch = false });
+                    return Ok(new { activeMatchId = (string?)null, hasActiveMatch = false });
                 }
 
                 var progress = _progressService.GetProgress(activeMatchId);
