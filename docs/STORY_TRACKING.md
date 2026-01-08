@@ -37,6 +37,58 @@ _No active stories at this time_
 
 ## Recent Stories
 
+### STORY-004: Database Migration System Fixes (v1.1.3)
+- **Status:** ✅ Completed
+- **Priority:** High
+- **Started:** 2025-01-09
+- **Completed:** 2025-01-09
+- **Developer:** AI Assistant
+- **Version:** 1.1.3
+- **Description:** 
+  Fixed database migration system that was not working correctly after updates. The system now automatically detects when SQL migrations are needed (specifically for Servarr fields) and executes them. Also fixed migration warning popup to properly display status, errors, and not show for unknown states.
+
+- **Database Changes:** 
+  No new schema changes - fixes migration execution for existing schema changes
+
+- **Migration Script:** 
+  Uses existing `Data/Migrations/AddServarrFields.sql` - now executed automatically
+
+- **UI Changes:**
+  - Fixed migration status banner to handle all states correctly
+  - Banner no longer shows for "unknown" status
+  - Error states persist (don't auto-hide)
+  - Error details displayed in banner
+  - Migration names shown as comma-separated list
+
+- **API Changes:**
+  None - internal service improvements only
+
+- **Service Updates:**
+  - `DatabaseMigrationService` - Enhanced with SQL migration detection and execution
+    - Added `CheckIfSqlMigrationNeededAsync()` to detect missing columns
+    - Added `ApplySqlMigrationAsync()` to execute SQL migration scripts
+    - Improved path resolution for migration files
+    - Better error handling with full error details in progress object
+  - `migration.js` - Fixed frontend migration status handling
+    - Proper handling of "unknown" status
+    - Error state persistence
+    - Better error details display
+
+- **Documentation Updates:**
+  - Updated CHANGELOG.md with migration fixes
+  - Updated version to 1.1.3
+
+- **Testing:**
+  - Verified migration detection works correctly
+  - Verified SQL migration executes successfully
+  - Verified banner displays correctly for all states
+  - Verified error states persist
+
+- **Notes:**
+  This fix resolves the "Error loading dashboard: 500 Internal Server Error" issue that occurred when database schema was out of sync with the model after updates.
+
+---
+
 ### STORY-003: Basic Authentication Support for Sonarr/Radarr (v1.1.2)
 - **Status:** ✅ Completed
 - **Priority:** Low

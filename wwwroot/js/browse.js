@@ -9,6 +9,7 @@ export async function loadBrowseMedia() {
     const codec = document.getElementById('browseCodecFilter')?.value || '';
     const container = document.getElementById('browseContainerFilter')?.value || '';
     const score = document.getElementById('browseScoreFilter')?.value || '';
+    const servarrFilter = document.getElementById('browseServarrFilter')?.value || '';
     const search = document.getElementById('browseSearch')?.value || '';
     const sortBy = document.getElementById('browseSortBy')?.value || 'analyzedAt';
     const sortOrder = document.getElementById('browseSortOrder')?.value || 'desc';
@@ -28,6 +29,7 @@ export async function loadBrowseMedia() {
         if (codec) params.append('codec', codec);
         if (container) params.append('container', container);
         if (score) params.append('score', score);
+        if (servarrFilter) params.append('servarrFilter', servarrFilter);
         if (search) params.append('search', search);
         if (sortBy) params.append('sortBy', sortBy);
         if (sortOrder) params.append('sortOrder', sortOrder);
@@ -90,9 +92,22 @@ export async function loadBrowseMedia() {
                     qualityTag = `${height}p`;
                 }
                 
+                // Servarr icons
+                let servarrIcons = '';
+                if (video.servarrType === 'Sonarr') {
+                    servarrIcons = '<span class="servarr-icon sonarr-icon" title="Found in Sonarr: ' + escapeHtml(video.sonarrSeriesTitle || 'Unknown Series') + ' S' + (video.sonarrSeasonNumber || '?') + 'E' + (video.sonarrEpisodeNumber || '?') + '">📺</span>';
+                } else if (video.servarrType === 'Radarr') {
+                    servarrIcons = '<span class="servarr-icon radarr-icon" title="Found in Radarr: ' + escapeHtml(video.radarrMovieTitle || 'Unknown Movie') + (video.radarrYear ? ' (' + video.radarrYear + ')' : '') + '">🎬</span>';
+                }
+                
                 return `
-                    <div class="media-card ${video.isBroken ? 'broken-media' : ''}" onclick="showMediaInfo(${video.id})">
+                    <div class="media-card ${video.isBroken ? 'broken-media' : ''}" data-video-id="${video.id}">
+                        <div class="media-card-checkbox" onclick="event.stopPropagation();">
+                            <input type="checkbox" class="browse-video-checkbox" value="${video.id}" onchange="updateBrowseSelection()">
+                        </div>
+                        <div class="media-card-content" onclick="showMediaInfo(${video.id})">
                         <div class="media-card-header">
+                            ${servarrIcons}
                             ${video.isBroken ? '<span class="broken-badge" title="Broken or unreadable media file">⚠️ Broken</span>' : `<span class="rating-badge rating-${rating}">${rating}/11</span>`}
                             ${video.isHDR ? '<span class="hdr-badge">HDR</span>' : '<span class="sdr-badge">SDR</span>'}
                             ${audioType !== 'Unknown' ? `<span class="audio-badge audio-${audioType.toLowerCase()}">${audioType}</span>` : ''}
@@ -116,6 +131,7 @@ export async function loadBrowseMedia() {
                                     <span class="info-value">${escapeHtml(video.container || 'NULL')}</span>
                                 </div>
                             </div>
+                        </div>
                         </div>
                     </div>
                 `;
@@ -266,6 +282,12 @@ export function setupBrowseEventListeners() {
     const searchInput = document.getElementById('browseSearch');
     const sortBy = document.getElementById('browseSortBy');
     const sortOrder = document.getElementById('browseSortOrder');
+    const servarrFilter = document.getElementById('browseServarrFilter');
+    const libraryFilter = document.getElementById('browseLibraryFilter');
+    const codecFilter = document.getElementById('browseCodecFilter');
+    const containerFilter = document.getElementById('browseContainerFilter');
+    const scoreFilter = document.getElementById('browseScoreFilter');
+    const brokenFilter = document.getElementById('browseBrokenFilter');
     
     if (searchInput) {
         searchInput.addEventListener('input', () => {
@@ -286,11 +308,154 @@ export function setupBrowseEventListeners() {
             loadBrowseMedia();
         });
     }
+    
+    if (servarrFilter) {
+        servarrFilter.addEventListener('change', () => {
+            resetBrowsePage();
+            loadBrowseMedia();
+        });
+    }
+    
+    if (libraryFilter) {
+        libraryFilter.addEventListener('change', () => {
+            resetBrowsePage();
+            loadBrowseMedia();
+        });
+    }
+    
+    if (codecFilter) {
+        codecFilter.addEventListener('change', () => {
+            resetBrowsePage();
+            loadBrowseMedia();
+        });
+    }
+    
+    if (containerFilter) {
+        containerFilter.addEventListener('change', () => {
+            resetBrowsePage();
+            loadBrowseMedia();
+        });
+    }
+    
+    if (scoreFilter) {
+        scoreFilter.addEventListener('change', () => {
+            resetBrowsePage();
+            loadBrowseMedia();
+        });
+    }
+    
+    if (brokenFilter) {
+        brokenFilter.addEventListener('change', () => {
+            resetBrowsePage();
+            loadBrowseMedia();
+        });
+    }
+}
+
+// Selection management
+let selectedVideoIds = new Set();
+
+export function updateBrowseSelection() {
+    const checkboxes = document.querySelectorAll('.browse-video-checkbox:checked');
+    selectedVideoIds = new Set(Array.from(checkboxes).map(cb => parseInt(cb.value)));
+    
+    const count = selectedVideoIds.size;
+    const countSpan = document.getElementById('selectedCount');
+    const toolbar = document.querySelector('.browse-selection-toolbar');
+    const redownloadBtn = document.getElementById('redownloadSelectedBtn');
+    const selectAllCheckbox = document.getElementById('selectAllBrowse');
+    
+    if (countSpan) countSpan.textContent = `${count} selected`;
+    if (toolbar) toolbar.style.display = count > 0 ? 'block' : 'none';
+    if (redownloadBtn) redownloadBtn.disabled = count === 0;
+    if (selectAllCheckbox) {
+        const allCheckboxes = document.querySelectorAll('.browse-video-checkbox');
+        selectAllCheckbox.checked = allCheckboxes.length > 0 && allCheckboxes.length === checkboxes.length;
+    }
+}
+
+export function toggleSelectAllBrowse() {
+    const selectAll = document.getElementById('selectAllBrowse');
+    const checkboxes = document.querySelectorAll('.browse-video-checkbox');
+    
+    if (selectAll && selectAll.checked) {
+        checkboxes.forEach(cb => {
+            cb.checked = true;
+            selectedVideoIds.add(parseInt(cb.value));
+        });
+    } else {
+        checkboxes.forEach(cb => {
+            cb.checked = false;
+        });
+        selectedVideoIds.clear();
+    }
+    
+    updateBrowseSelection();
+}
+
+export function clearBrowseSelection() {
+    selectedVideoIds.clear();
+    const checkboxes = document.querySelectorAll('.browse-video-checkbox');
+    checkboxes.forEach(cb => cb.checked = false);
+    const selectAll = document.getElementById('selectAllBrowse');
+    if (selectAll) selectAll.checked = false;
+    updateBrowseSelection();
+}
+
+export async function redownloadSelected() {
+    if (selectedVideoIds.size === 0) {
+        alert('No videos selected');
+        return;
+    }
+    
+    const count = selectedVideoIds.size;
+    if (!confirm(`Are you sure you want to redownload ${count} video(s)?\n\nThis will:\n- Delete the file(s) from disk\n- Remove them from Sonarr/Radarr\n- Trigger a new download\n- Remove them from the database`)) {
+        return;
+    }
+    
+    const redownloadBtn = document.getElementById('redownloadSelectedBtn');
+    if (redownloadBtn) {
+        redownloadBtn.disabled = true;
+        redownloadBtn.textContent = 'Processing...';
+    }
+    
+    try {
+        const response = await fetch('/api/library/videos/redownload', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ videoIds: Array.from(selectedVideoIds) })
+        });
+        
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.error || 'Failed to redownload videos');
+        }
+        
+        const result = await response.json();
+        
+        alert(`Redownload completed!\n\nTotal: ${result.total}\nSuccess: ${result.success}\nFailed: ${result.failed}`);
+        
+        // Clear selection and reload
+        clearBrowseSelection();
+        loadBrowseMedia();
+    } catch (error) {
+        console.error('Error redownloading videos:', error);
+        alert(`Error redownloading videos: ${error.message}`);
+    } finally {
+        if (redownloadBtn) {
+            redownloadBtn.disabled = false;
+            redownloadBtn.textContent = 'Redownload Selected';
+        }
+    }
 }
 
 // Export to window for onclick handlers
 window.loadBrowseMedia = loadBrowseMedia;
 window.browseCurrentPage = browseCurrentPage;
 window.resetBrowsePage = resetBrowsePage;
+window.updateBrowseSelection = updateBrowseSelection;
+window.toggleSelectAllBrowse = toggleSelectAllBrowse;
+window.clearBrowseSelection = clearBrowseSelection;
+window.redownloadSelected = redownloadSelected;
 window.setBrowsePage = setBrowsePage;
 

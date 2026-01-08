@@ -1,5 +1,5 @@
 // Media Info Modal Functions
-import { escapeHtml, formatFileSize, formatDuration } from './utils.js';
+import { escapeHtml, formatFileSize, formatDuration, formatTimeSpan } from './utils.js';
 
 export function getNonOptimalFields(video) {
     const nonOptimal = {
@@ -239,6 +239,63 @@ export async function showMediaInfo(videoId) {
         const analyzedDate = video.analyzedAt ? new Date(video.analyzedAt).toLocaleString() : 'N/A';
         const rescanIcon = `<button type="button" class="rescan-icon-btn" onclick="rescanVideo(${video.id})" id="rescanVideoBtn" title="Rescan video" style="background: none; border: none; cursor: pointer; padding: 0; margin-left: 0.5rem; font-size: 1rem; color: var(--text-secondary); transition: color 0.2s;" onmouseover="this.style.color='var(--primary-color)'" onmouseout="this.style.color='var(--text-secondary)'"><span id="rescanIconSymbol" style="display: inline-block;">↻</span></button>`;
         
+        // Load playback history for this video
+        let playbackHistory = [];
+        try {
+            const playbackResponse = await fetch(`/api/playback/history/video/${videoId}`);
+            if (playbackResponse.ok) {
+                const playbackData = await playbackResponse.json();
+                playbackHistory = playbackData.items || [];
+            }
+        } catch (error) {
+            console.warn('Error loading playback history:', error);
+        }
+        
+        // Servarr information
+        let servarrSection = '';
+        if (video.servarrType === 'Sonarr' && video.sonarrSeriesTitle) {
+            servarrSection = `
+                <div class="info-section servarr-section">
+                    <h4 style="display: flex; align-items: center; gap: 0.5rem;">
+                        <span>📺</span>
+                        <span>Sonarr Information</span>
+                    </h4>
+                    ${createInfoItem('Series', escapeHtml(video.sonarrSeriesTitle || 'N/A'), false)}
+                    ${video.sonarrSeasonNumber !== null && video.sonarrSeasonNumber !== undefined 
+                        ? createInfoItem('Season', video.sonarrSeasonNumber.toString(), false) 
+                        : ''}
+                    ${video.sonarrEpisodeNumber !== null && video.sonarrEpisodeNumber !== undefined 
+                        ? createInfoItem('Episode', video.sonarrEpisodeNumber.toString(), false) 
+                        : ''}
+                    ${video.sonarrSeriesId 
+                        ? createInfoItem('Series ID', video.sonarrSeriesId.toString(), false) 
+                        : ''}
+                    ${video.servarrMatchedAt 
+                        ? createInfoItem('Matched', new Date(video.servarrMatchedAt).toLocaleString(), false) 
+                        : ''}
+                </div>
+            `;
+        } else if (video.servarrType === 'Radarr' && video.radarrMovieTitle) {
+            servarrSection = `
+                <div class="info-section servarr-section">
+                    <h4 style="display: flex; align-items: center; gap: 0.5rem;">
+                        <span>🎬</span>
+                        <span>Radarr Information</span>
+                    </h4>
+                    ${createInfoItem('Movie', escapeHtml(video.radarrMovieTitle || 'N/A'), false)}
+                    ${video.radarrYear 
+                        ? createInfoItem('Year', video.radarrYear.toString(), false) 
+                        : ''}
+                    ${video.radarrMovieId 
+                        ? createInfoItem('Movie ID', video.radarrMovieId.toString(), false) 
+                        : ''}
+                    ${video.servarrMatchedAt 
+                        ? createInfoItem('Matched', new Date(video.servarrMatchedAt).toLocaleString(), false) 
+                        : ''}
+                </div>
+            `;
+        }
+        
         content.innerHTML = `
             <div class="media-info-grid">
                 <div class="info-section">
@@ -254,6 +311,7 @@ export async function showMediaInfo(videoId) {
                         </span>
                     </div>
                 </div>
+                ${servarrSection}
                 
                 <div class="info-section">
                     <h4>Video Information</h4>
@@ -322,6 +380,59 @@ export async function showMediaInfo(videoId) {
                     </div>
                 </div>
                 
+                ${playbackHistory.length > 0 ? `
+                <div class="info-section" style="grid-column: 1 / -1;">
+                    <h4>Playback History (${playbackHistory.length})</h4>
+                    <div style="max-height: 300px; overflow-y: auto; margin-top: 0.75rem;">
+                        <table style="width: 100%; border-collapse: collapse; font-size: 0.875rem;">
+                            <thead>
+                                <tr style="border-bottom: 1px solid var(--border-color);">
+                                    <th style="text-align: left; padding: 0.5rem; color: var(--text-secondary); font-weight: 600;">Date</th>
+                                    <th style="text-align: left; padding: 0.5rem; color: var(--text-secondary); font-weight: 600;">Client</th>
+                                    <th style="text-align: left; padding: 0.5rem; color: var(--text-secondary); font-weight: 600;">Device</th>
+                                    <th style="text-align: left; padding: 0.5rem; color: var(--text-secondary); font-weight: 600;">User</th>
+                                    <th style="text-align: left; padding: 0.5rem; color: var(--text-secondary); font-weight: 600;">Method</th>
+                                    <th style="text-align: left; padding: 0.5rem; color: var(--text-secondary); font-weight: 600;">Duration</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${playbackHistory.map(playback => {
+                                    const playMethodClass = playback.isDirectPlay ? 'directplay' : 
+                                                           playback.isDirectStream ? 'directstream' : 
+                                                           'transcode';
+                                    const playMethodLabel = playback.isDirectPlay ? 'Direct Play' : 
+                                                           playback.isDirectStream ? 'Direct Stream' : 
+                                                           'Transcode';
+                                    const playMethodIcon = playback.isDirectPlay ? '✓' : 
+                                                          playback.isDirectStream ? '~' : 
+                                                          '✗';
+                                    const startTime = new Date(playback.playbackStartTime);
+                                    const duration = playback.playbackDuration ? formatTimeSpan(playback.playbackDuration) : '-';
+                                    const transcodeReason = playback.isTranscode && playback.transcodeReason 
+                                        ? `<br><small style="color: var(--text-secondary); font-size: 0.75rem;">${escapeHtml(playback.transcodeReason)}</small>` 
+                                        : '';
+                                    
+                                    return `
+                                        <tr style="border-bottom: 1px solid var(--border-color);">
+                                            <td style="padding: 0.5rem; color: var(--text-primary);">${startTime.toLocaleString()}</td>
+                                            <td style="padding: 0.5rem; color: var(--text-primary);">${escapeHtml(playback.clientName || 'Unknown')}</td>
+                                            <td style="padding: 0.5rem; color: var(--text-primary);">${escapeHtml(playback.deviceName || 'Unknown')}</td>
+                                            <td style="padding: 0.5rem; color: var(--text-primary);">${escapeHtml(playback.userName || '-')}</td>
+                                            <td style="padding: 0.5rem;">
+                                                <span class="playback-method-badge ${playMethodClass}" style="font-size: 0.75rem; padding: 0.25rem 0.5rem;">
+                                                    ${playMethodIcon} ${playMethodLabel}
+                                                </span>
+                                                ${transcodeReason}
+                                            </td>
+                                            <td style="padding: 0.5rem; color: var(--text-primary);">${duration}</td>
+                                        </tr>
+                                    `;
+                                }).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                ` : ''}
                 ${issuesList.length > 0 || recommendationsList.length > 0 ? `
                 <div class="info-section" style="grid-column: 1 / -1;">
                     ${issuesList.length > 0 ? `

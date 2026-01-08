@@ -329,8 +329,8 @@ namespace Optimarr.Controllers
             if (scan == null)
                 return NotFound();
             
-            // Get current processing file from scanner service
-            var currentFile = _scannerService.GetCurrentProcessingFile();
+            // Get current processing file from database (persists across page reloads)
+            var currentFile = scan.CurrentProcessingFile;
             
             // Calculate progress metrics
             var elapsed = DateTime.UtcNow - scan.StartedAt;
@@ -556,7 +556,23 @@ namespace Optimarr.Controllers
         public async Task<ActionResult<object>> GetClientCompatibilityStats()
         {
             var allVideos = await _dbContext.VideoAnalyses.ToListAsync();
-            var allClients = Services.JellyfinCompatibilityData.AllClients;
+            
+            // Get enabled clients (filter out disabled ones)
+            var allClientsList = Services.JellyfinCompatibilityData.AllClients;
+            var disabledClientsSection = _configuration?.GetSection("CompatibilityRating:DisabledClients");
+            var enabledClients = new List<string>();
+            
+            foreach (var client in allClientsList)
+            {
+                var isDisabled = disabledClientsSection?.GetValue<bool>(client) ?? false;
+                if (!isDisabled)
+                {
+                    enabledClients.Add(client);
+                }
+            }
+            
+            // If all clients are disabled, enable all by default
+            var allClients = enabledClients.Count > 0 ? enabledClients.ToArray() : allClientsList;
             
             var clientStats = new Dictionary<string, object>();
             
@@ -624,7 +640,8 @@ namespace Optimarr.Controllers
             [FromQuery] string? search = null,
             [FromQuery] string? sortBy = "analyzedAt",
             [FromQuery] string? sortOrder = "desc",
-            [FromQuery] bool? isBroken = null)
+            [FromQuery] bool? isBroken = null,
+            [FromQuery] string? servarrFilter = null)
         {
             try
             {
@@ -677,6 +694,23 @@ namespace Optimarr.Controllers
                 if (isBroken.HasValue)
                 {
                     query = query.Where(v => v.IsBroken == isBroken.Value);
+                }
+
+                // Filter by Servarr sync status
+                if (!string.IsNullOrEmpty(servarrFilter))
+                {
+                    var filterLower = servarrFilter.ToLowerInvariant();
+                    if (filterLower == "synced")
+                    {
+                        // Show only videos that have been synced with Sonarr or Radarr
+                        query = query.Where(v => !string.IsNullOrEmpty(v.ServarrType));
+                    }
+                    else if (filterLower == "not-synced")
+                    {
+                        // Show only videos that have NOT been synced
+                        query = query.Where(v => string.IsNullOrEmpty(v.ServarrType));
+                    }
+                    // If filter is something else, ignore it (show all)
                 }
 
                 // Load all matching videos to recalculate scores and filter
@@ -979,15 +1013,44 @@ namespace Optimarr.Controllers
         [HttpGet("settings/compatibility")]
         public ActionResult<object> GetCompatibilitySettings()
         {
+            // Get enabled clients (filter out disabled ones)
+            var allClients = JellyfinCompatibilityData.AllClients;
+            var disabledClientsSection = _configuration?.GetSection("CompatibilityRating:DisabledClients");
+            var enabledClients = new List<string>();
+            
+            foreach (var client in allClients)
+            {
+                var isDisabled = disabledClientsSection?.GetValue<bool>(client) ?? false;
+                if (!isDisabled)
+                {
+                    enabledClients.Add(client);
+                }
+            }
+            
+            // If all clients are disabled, enable all by default
+            if (enabledClients.Count == 0)
+            {
+                enabledClients = allClients.ToList();
+            }
+            
             // Get default compatibility data
             var videoCodecs = JellyfinCompatibilityData.VideoCodecSupport;
             var audioCodecs = JellyfinCompatibilityData.AudioCodecSupport;
             var containers = JellyfinCompatibilityData.ContainerSupport;
             var subtitles = JellyfinCompatibilityData.SubtitleSupport;
-            var clients = JellyfinCompatibilityData.AllClients;
+            var clients = enabledClients.ToArray();
 
             // Get custom overrides from configuration
-            var overrides = _configuration.GetSection("CompatibilityOverrides").Get<List<CompatibilityOverride>>() ?? new List<CompatibilityOverride>();
+            var overridesSection = _configuration.GetSection("CompatibilityOverrides");
+            List<CompatibilityOverride> overrides;
+            if (overridesSection.Exists())
+            {
+                overrides = overridesSection.Get<List<CompatibilityOverride>>() ?? new List<CompatibilityOverride>();
+            }
+            else
+            {
+                overrides = new List<CompatibilityOverride>();
+            }
 
             // Build response with defaults and overrides
             var response = new
@@ -1651,6 +1714,11 @@ namespace Optimarr.Controllers
                 }
 
                 var videoDir = System.IO.Path.GetDirectoryName(video.FilePath);
+                if (string.IsNullOrEmpty(videoDir))
+                {
+                    return BadRequest(new { error = "Cannot get directory name for video file" });
+                }
+                
                 var videoNameWithoutExt = System.IO.Path.GetFileNameWithoutExtension(video.FilePath);
                 var subtitleExtensions = new[] { ".srt", ".vtt", ".ass", ".ssa", ".sub" };
                 
@@ -1740,6 +1808,178 @@ namespace Optimarr.Controllers
                 return StatusCode(500, new { error = "Failed to load video", message = ex.Message });
             }
         }
+
+        [HttpPost("videos/redownload")]
+        public async Task<ActionResult> RedownloadVideos([FromBody] RedownloadRequest request)
+        {
+            if (request.VideoIds == null || request.VideoIds.Count == 0)
+            {
+                return BadRequest(new { error = "No video IDs provided" });
+            }
+
+            _logger.LogInformation("Redownload requested for {Count} videos", request.VideoIds.Count);
+
+            var results = new List<RedownloadResult>();
+            var sonarrService = HttpContext.RequestServices.GetService<SonarrService>();
+            var radarrService = HttpContext.RequestServices.GetService<RadarrService>();
+
+            foreach (var videoId in request.VideoIds)
+            {
+                var result = new RedownloadResult
+                {
+                    VideoId = videoId,
+                    Success = false,
+                    Message = "Not processed"
+                };
+
+                try
+                {
+                    var video = await _dbContext.VideoAnalyses.FindAsync(videoId);
+                    if (video == null)
+                    {
+                        result.Message = "Video not found in database";
+                        results.Add(result);
+                        continue;
+                    }
+
+                    if (string.IsNullOrEmpty(video.FilePath))
+                    {
+                        result.Message = "Video file path is empty";
+                        results.Add(result);
+                        continue;
+                    }
+
+                    var filePath = video.FilePath;
+                    var fileExists = System.IO.File.Exists(filePath);
+
+                    // Try to find in Sonarr first
+                    if (sonarrService != null && sonarrService.IsEnabled && sonarrService.IsConnected)
+                    {
+                        var episode = await sonarrService.FindEpisodeByPath(filePath);
+                        if (episode != null)
+                        {
+                            _logger.LogInformation("Found video in Sonarr: EpisodeId={EpisodeId}, FilePath={FilePath}", 
+                                episode.Id, filePath);
+
+                            // Delete file from disk if it exists
+                            if (fileExists)
+                            {
+                                try
+                                {
+                                    System.IO.File.Delete(filePath);
+                                    _logger.LogInformation("Deleted file from disk: {FilePath}", filePath);
+                                }
+                                catch (Exception ex)
+                                {
+                                    _logger.LogWarning(ex, "Failed to delete file from disk: {FilePath}", filePath);
+                                }
+                            }
+
+                            // Delete from Sonarr if episode file ID exists
+                            if (episode.EpisodeFileId.HasValue)
+                            {
+                                var deleted = await sonarrService.DeleteEpisodeFile(episode.EpisodeFileId.Value);
+                                if (deleted)
+                                {
+                                    _logger.LogInformation("Deleted episode file from Sonarr: EpisodeFileId={EpisodeFileId}", 
+                                        episode.EpisodeFileId.Value);
+                                }
+                            }
+
+                            // Trigger search
+                            var searchTriggered = await sonarrService.TriggerEpisodeSearch(episode.Id);
+                            if (searchTriggered)
+                            {
+                                result.Success = true;
+                                result.Message = "Redownload triggered in Sonarr";
+                                result.Service = "Sonarr";
+                            }
+                            else
+                            {
+                                result.Message = "Failed to trigger Sonarr search";
+                            }
+
+                            // Remove from database
+                            _dbContext.VideoAnalyses.Remove(video);
+                            results.Add(result);
+                            continue;
+                        }
+                    }
+
+                    // Try Radarr
+                    if (radarrService != null && radarrService.IsEnabled && radarrService.IsConnected)
+                    {
+                        var movie = await radarrService.FindMovieByPath(filePath);
+                        if (movie != null && movie.MovieFile != null)
+                        {
+                            _logger.LogInformation("Found video in Radarr: MovieId={MovieId}, FilePath={FilePath}", 
+                                movie.Id, filePath);
+
+                            // Delete file from disk if it exists
+                            if (fileExists)
+                            {
+                                try
+                                {
+                                    System.IO.File.Delete(filePath);
+                                    _logger.LogInformation("Deleted file from disk: {FilePath}", filePath);
+                                }
+                                catch (Exception ex)
+                                {
+                                    _logger.LogWarning(ex, "Failed to delete file from disk: {FilePath}", filePath);
+                                }
+                            }
+
+                            // Delete from Radarr
+                            var deleted = await radarrService.DeleteMovieFile(movie.MovieFile.Id);
+                            if (deleted)
+                            {
+                                _logger.LogInformation("Deleted movie file from Radarr: MovieFileId={MovieFileId}", 
+                                    movie.MovieFile.Id);
+                            }
+
+                            // Trigger search
+                            var searchTriggered = await radarrService.TriggerMovieSearch(movie.Id);
+                            if (searchTriggered)
+                            {
+                                result.Success = true;
+                                result.Message = "Redownload triggered in Radarr";
+                                result.Service = "Radarr";
+                            }
+                            else
+                            {
+                                result.Message = "Failed to trigger Radarr search";
+                            }
+
+                            // Remove from database
+                            _dbContext.VideoAnalyses.Remove(video);
+                            results.Add(result);
+                            continue;
+                        }
+                    }
+
+                    // Not found in Sonarr or Radarr
+                    result.Message = "Video not found in Sonarr or Radarr";
+                    results.Add(result);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error processing redownload for video {VideoId}", videoId);
+                    result.Message = $"Error: {ex.Message}";
+                    results.Add(result);
+                }
+            }
+
+            await _dbContext.SaveChangesAsync();
+
+            var successCount = results.Count(r => r.Success);
+            return Ok(new
+            {
+                total = request.VideoIds.Count,
+                success = successCount,
+                failed = request.VideoIds.Count - successCount,
+                results = results
+            });
+        }
     }
 
     public class ScanRequest
@@ -1754,6 +1994,19 @@ namespace Optimarr.Controllers
         public string Path { get; set; } = string.Empty;
         public string? Name { get; set; }
         public string? Category { get; set; } = "Misc";
+    }
+
+    public class RedownloadRequest
+    {
+        public List<int> VideoIds { get; set; } = new();
+    }
+
+    public class RedownloadResult
+    {
+        public int VideoId { get; set; }
+        public bool Success { get; set; }
+        public string Message { get; set; } = string.Empty;
+        public string? Service { get; set; }
     }
 
     public class LibraryPathInfo

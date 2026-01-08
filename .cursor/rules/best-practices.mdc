@@ -1,0 +1,71 @@
+---
+type: Apply Intelligently
+description: Best practices for performance, security, logging, UI/UX, and testing in Optimarr
+---
+
+# Best Practices
+
+## Performance Considerations
+
+- **Large Libraries:** Process in batches, show progress
+  - **Example:** See `Services/VideoServarrMatcherService.cs` - processes in batches of 50, saves periodically
+  - **Example:** See `wwwroot/js/servarr.js` - progress polling for long operations
+- **API Calls:** Add timeouts, handle rate limiting
+  - **Example:** See `Services/SonarrService.cs` for timeout handling
+- **Database Queries:** Use efficient LINQ, add indexes
+  - **Reference:** See `Data/AppDbContext.cs` for index definitions
+- **UI Updates:** Debounce search, paginate large lists
+  - **Example:** See `wwwroot/js/browse.js` for pagination patterns
+- **Background Tasks:** Use async/await, don't block UI
+  - **Example:** See `Services/PlaybackSyncService.cs` for background service pattern
+
+## Security Considerations
+
+- Sanitize file paths to prevent directory traversal
+- Validate API keys before saving
+- Use parameterized queries (EF Core handles this)
+- Don't expose sensitive data in logs
+- Validate user input
+
+## Logging Best Practices
+
+- Use structured logging with context
+- Log at appropriate levels:
+  - **Information:** Normal operations, progress
+  - **Warning:** Recoverable issues, missing optional data
+  - **Error:** Exceptions, failures
+  - **Fatal:** Application startup failures
+- Include relevant context in log messages
+
+**Examples:**
+- Information: `_logger.LogInformation("Matched {MatchedCount} videos out of {TotalVideos}", matched, total)`
+- Warning: `_logger.LogWarning(ex, "Error loading episode file {EpisodeFileId} for series {SeriesId}", episodeFileId, seriesId)`
+- Error: `_logger.LogError(ex, "Error matching videos with Servarr")`
+
+**Reference:** See `Services/VideoServarrMatcherService.cs` for logging examples throughout
+
+## UI/UX Guidelines
+
+- Follow Servarr-style dark theme
+- Use consistent spacing and typography
+- Provide loading indicators for async operations
+- Show clear error messages
+- Make actions reversible when possible
+- Ensure keyboard navigation works
+- Test on mobile devices
+
+## Testing Guidelines
+
+### Manual Testing Checklist
+- [ ] Feature works as expected
+- [ ] Error cases handled gracefully
+- [ ] UI is responsive on mobile
+- [ ] Logs show appropriate information
+- [ ] No console errors in browser
+- [ ] Database changes work correctly
+
+### Database Testing
+- [ ] Migration script works on existing database
+- [ ] Migration script works on new database
+- [ ] Data integrity maintained after migration
+- [ ] Indexes are created correctly

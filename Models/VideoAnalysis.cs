@@ -53,6 +53,18 @@ namespace Optimarr.Models
         
         public int? LibraryScanId { get; set; }
         public virtual LibraryScan? LibraryScan { get; set; }
+        
+        // Sonarr/Radarr Integration
+        public string? ServarrType { get; set; } // "Sonarr" or "Radarr"
+        public int? SonarrSeriesId { get; set; }
+        public string? SonarrSeriesTitle { get; set; }
+        public int? SonarrEpisodeId { get; set; }
+        public int? SonarrEpisodeNumber { get; set; }
+        public int? SonarrSeasonNumber { get; set; }
+        public int? RadarrMovieId { get; set; }
+        public string? RadarrMovieTitle { get; set; }
+        public int? RadarrYear { get; set; }
+        public DateTime? ServarrMatchedAt { get; set; } // When the match was made
     }
 
     public enum CompatibilityScore

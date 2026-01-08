@@ -1,5 +1,6 @@
 using System.Reflection;
 using Microsoft.AspNetCore.Mvc;
+using Optimarr.Services;
 
 namespace Optimarr.Controllers
 {
@@ -24,9 +25,42 @@ namespace Optimarr.Controllers
             });
         }
 
+        [HttpGet("migration")]
+        public ActionResult<object> GetMigrationStatus()
+        {
+            var progress = DatabaseMigrationService.GetMigrationProgress();
+            if (progress == null)
+            {
+                return Ok(new
+                {
+                    status = "unknown",
+                    message = "Migration status not available"
+                });
+            }
+
+            return Ok(progress);
+        }
+
         [HttpGet("version")]
         public ActionResult<object> GetVersion()
         {
+            // Try to read version from VERSION file first (preferred method)
+            var versionFile = Path.Combine(AppContext.BaseDirectory, "VERSION");
+            string? versionFromFile = null;
+            
+            if (System.IO.File.Exists(versionFile))
+            {
+                try
+                {
+                    versionFromFile = System.IO.File.ReadAllText(versionFile).Trim();
+                }
+                catch
+                {
+                    // Ignore errors reading version file
+                }
+            }
+            
+            // Fallback to assembly version if VERSION file not found
             var assembly = Assembly.GetExecutingAssembly();
             var version = assembly.GetName().Version;
             var versionString = version?.ToString() ?? "Unknown";
@@ -36,9 +70,10 @@ namespace Optimarr.Controllers
             
             return Ok(new
             {
-                version = informationalVersion ?? versionString,
+                version = versionFromFile ?? informationalVersion ?? versionString,
                 assemblyVersion = versionString,
-                buildDate = GetBuildDate(assembly)
+                buildDate = GetBuildDate(assembly),
+                source = versionFromFile != null ? "VERSION file" : "Assembly"
             });
         }
 

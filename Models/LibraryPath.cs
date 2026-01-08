@@ -21,6 +21,12 @@ namespace Optimarr.Models
         
         public int TotalFiles { get; set; }
         public long TotalSize { get; set; }
+        
+        // Radarr/Sonarr integration
+        public string? ServarrType { get; set; } // "Radarr" or "Sonarr"
+        public int? ServarrRootFolderId { get; set; } // Root folder ID from Radarr/Sonarr
+        public string? ServarrRootFolderPath { get; set; } // Root folder path from Radarr/Sonarr
+        public DateTime? LastSyncedAt { get; set; } // Last time synced with Radarr/Sonarr
     }
 }
 

@@ -54,6 +54,8 @@ namespace Optimarr.Data
                 entity.HasKey(e => e.Id);
                 entity.HasIndex(e => e.Path).IsUnique();
                 entity.HasIndex(e => e.IsActive);
+                entity.HasIndex(e => e.ServarrType);
+                entity.HasIndex(e => e.ServarrRootFolderId);
             });
 
             // FailedFile configuration

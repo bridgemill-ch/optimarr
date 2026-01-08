@@ -9,25 +9,19 @@ services:
     ports:
       - "5000:5000"
     volumes:
-      # Mount source code for hot reload
-      - .:/app
-      # Exclude build artifacts
-      - /app/bin
-      - /app/obj
-      # Mount config, data, and videos as separate volumes (override the source mount)
-      - ./config:/app/config:ro
-      # Data folder (database)
-      - ./data:/app/data
-      # Logs folder
-      - ./logs:/app/logs
-      # Video library folder
-      - ./videos:/videos:ro
-    environment:
-      - ASPNETCORE_ENVIRONMENT=Development
-      - ASPNETCORE_URLS=http://0.0.0.0:5000
+      - optimarr-dev-config:/app/config
+      - optimarr-dev-data:/app/data
+      - optimarr-dev-logs:/app/logs
+      - /mnt/media:/media:ro
     restart: unless-stopped
     networks:
       - servarr-network
+
+volumes:
+  optimarr-dev-config:
+  optimarr-dev-data:
+  optimarr-dev-logs:
+  optimarr-dev-videos:
 
 networks:
   servarr-network:

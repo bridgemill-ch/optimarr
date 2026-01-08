@@ -213,9 +213,16 @@ try
     builder.Services.AddSingleton<RadarrService>(sp => 
         new RadarrService(sp.GetRequiredService<IConfiguration>(), 
             sp.GetService<ILogger<RadarrService>>()));
+    builder.Services.AddScoped<ServarrSyncService>();
+    builder.Services.AddScoped<VideoServarrMatcherService>();
+    builder.Services.AddSingleton<VideoMatchingProgressService>();
     builder.Services.AddSingleton<JellyfinService>(sp => 
         new JellyfinService(sp.GetRequiredService<IConfiguration>(), 
             sp.GetService<ILogger<JellyfinService>>()));
+    
+    // Register background services
+    builder.Services.AddHostedService<DatabaseMigrationService>();
+    builder.Services.AddHostedService<PlaybackSyncService>();
 
     // CORS for local development
     builder.Services.AddCors(options =>
@@ -254,13 +261,8 @@ try
         Log.Information("All required directories verified: config, data, logs");
     }
 
-    // Ensure database is created
-    using (var scope = app.Services.CreateScope())
-    {
-        var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-        dbContext.Database.EnsureCreated();
-        Log.Information("Database initialized at: {DbPath}", dbPath);
-    }
+    // Database migration is handled by DatabaseMigrationService
+    // No need to call EnsureCreated here - migrations will handle it
 
     // Check MediaInfo CLI tool availability
     try

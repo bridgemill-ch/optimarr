@@ -8,6 +8,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.1.3] - 2025-01-09
+
+### Fixed
+- **Database Migration System**: Fixed database migration not working correctly after updates
+  - Added automatic SQL migration detection and execution for Servarr fields
+  - Migration service now checks if `ServarrType` column exists before applying migration
+  - Improved path resolution for migration SQL file (searches multiple locations)
+  - Added proper transaction handling with rollback on errors
+  - Migration now executes automatically on startup when needed
+
+- **Migration Warning Popup**: Fixed migration status banner display issues
+  - Banner no longer shows for "unknown" status (when migration service hasn't started)
+  - Error states now persist and don't auto-hide (users can see error messages)
+  - Error details are now displayed in banner details section
+  - Migration names are shown as comma-separated list instead of just counts
+  - Improved error handling and status reporting
+
+#### Technical Details
+- Updated `DatabaseMigrationService` to detect and execute SQL migrations
+- Added `CheckIfSqlMigrationNeededAsync()` method to check for missing columns
+- Added `ApplySqlMigrationAsync()` method to execute SQL migration scripts
+- Enhanced `migration.js` to handle all migration states correctly
+- Error property now properly set in `MigrationProgress` class
+
+#### Database Impact
+- **Migration Required**: Yes - SQL migration will run automatically on first startup after update
+- **Backward Compatible**: Yes - Existing databases will be migrated automatically
+
+---
+
 ## [1.1.2] - 2025-01-XX
 
 ### Added
@@ -120,6 +150,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 | Version | Date | Story ID | Description |
 |---------|------|----------|-------------|
+| 1.1.3 | 2025-01-09 | - | Database migration fixes and warning popup improvements |
 | 1.1.2 | 2025-01-XX | STORY-002 | Progress bar for video matching with Sonarr/Radarr |
 | 1.1.1 | 2025-01-XX | - | UI Bug Fix: Checkbox overlap with tags |
 | 1.1.0 | 2025-01-XX | STORY-001 | Servarr Video Matching Integration |

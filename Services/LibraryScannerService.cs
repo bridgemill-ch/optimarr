@@ -20,7 +20,6 @@ namespace Optimarr.Services
         private readonly ILogger<LibraryScannerService> _logger;
         private readonly IServiceScopeFactory _serviceScopeFactory;
         private CancellationTokenSource? _cancellationTokenSource;
-        private string? _currentProcessingFile;
         private DateTime _scanStartTime;
 
         private static readonly string[] VideoExtensions = { ".mp4", ".mkv", ".avi", ".ts", ".m2ts", ".webm", ".ogg", ".mov", ".m4v" };
@@ -172,10 +171,6 @@ namespace Optimarr.Services
             _cancellationTokenSource?.Cancel();
         }
 
-        public string? GetCurrentProcessingFile()
-        {
-            return _currentProcessingFile;
-        }
 
         private async Task ExecuteScanAsync(int scanId, AppDbContext dbContext, VideoAnalyzerService videoAnalyzer)
         {
@@ -233,7 +228,8 @@ namespace Optimarr.Services
                 _cancellationTokenSource = new CancellationTokenSource();
                 var cancellationToken = _cancellationTokenSource.Token;
                 _scanStartTime = DateTime.UtcNow;
-                _currentProcessingFile = null;
+                scan.CurrentProcessingFile = null;
+                await dbContext.SaveChangesAsync();
 
                 try
                 {
@@ -288,6 +284,24 @@ namespace Optimarr.Services
                             try
                             {
                                 _logger.LogInformation(">>> FILE START: {FileName}", Path.GetFileName(filePath));
+
+                                // Update current processing file in database
+                                lock (lockObject)
+                                {
+                                    try
+                                    {
+                                        var trackedScan = dbContext.LibraryScans.Find(scanId);
+                                        if (trackedScan != null)
+                                        {
+                                            trackedScan.CurrentProcessingFile = filePath;
+                                            dbContext.SaveChanges();
+                                        }
+                                    }
+                                    catch (Exception dbEx)
+                                    {
+                                        _logger.LogWarning(dbEx, "Error updating current processing file");
+                                    }
+                                }
 
                                 // Check if file exists
                                 if (!File.Exists(filePath))
@@ -534,7 +548,19 @@ namespace Optimarr.Services
             }
             finally
             {
-                _currentProcessingFile = null;
+                try
+                {
+                    var finalScan = await dbContext.LibraryScans.FindAsync(scanId);
+                    if (finalScan != null)
+                    {
+                        finalScan.CurrentProcessingFile = null;
+                        await dbContext.SaveChangesAsync();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Error clearing current processing file");
+                }
                 _logger.LogInformation("=== SCAN END: ExecuteScanAsync finished for scan ID: {ScanId} ===", scanId);
             }
         }

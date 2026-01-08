@@ -21,6 +21,19 @@ export async function loadJellyfinSettings() {
         if (usernameInput) usernameInput.value = settings.username || '';
         // Don't set password - it's never returned from the API
         if (enabledInput) enabledInput.checked = settings.enabled || false;
+        
+        // Setup sync days input listener
+        const syncDaysInput = document.getElementById('syncDays');
+        if (syncDaysInput) {
+            syncDaysInput.addEventListener('input', () => {
+                const syncAllCheckbox = document.getElementById('syncAllHistory');
+                const helpText = document.getElementById('syncHelpText');
+                if (helpText && (!syncAllCheckbox || !syncAllCheckbox.checked)) {
+                    const days = syncDaysInput.value || 30;
+                    helpText.textContent = `Import playback history from the last ${days} days. Check "Sync All" to import complete history.`;
+                }
+            });
+        }
     } catch (error) {
         console.error('Error loading Jellyfin settings:', error);
     }
@@ -418,9 +431,561 @@ export async function resetCompatibilitySettings() {
     }
 }
 
+// Client Settings Functions
+export async function loadClientSettings() {
+    const container = document.getElementById('clientSettingsContainer');
+    if (!container) return;
+    
+    try {
+        const response = await fetch('/api/playback/clients');
+        if (!response.ok) {
+            container.innerHTML = '<div class="error-state">Failed to load client settings</div>';
+            return;
+        }
+        
+        const data = await response.json();
+        const clients = data.clients || {};
+        const allClients = data.allClients || [];
+        
+        if (allClients.length === 0) {
+            container.innerHTML = '<div class="empty-state">No clients available</div>';
+            return;
+        }
+        
+        container.innerHTML = `
+            <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 1rem;">
+                ${allClients.map(client => `
+                    <label class="checkbox-label" style="display: flex; align-items: center; gap: 0.75rem; padding: 0.75rem; background-color: var(--bg-secondary); border-radius: 4px; border: 1px solid var(--border-color); cursor: pointer;">
+                        <input type="checkbox" 
+                               class="client-checkbox" 
+                               data-client="${escapeHtml(client)}" 
+                               ${clients[client] !== false ? 'checked' : ''}
+                               onchange="updateClientSettings()">
+                        <span style="font-weight: 500; color: var(--text-primary);">${escapeHtml(client)}</span>
+                    </label>
+                `).join('')}
+            </div>
+            <div style="margin-top: 1rem; display: flex; gap: 0.5rem; align-items: center;">
+                <button type="button" class="btn btn-secondary btn-sm" onclick="selectAllClients()">Select All</button>
+                <button type="button" class="btn btn-secondary btn-sm" onclick="deselectAllClients()">Deselect All</button>
+                <span id="clientCount" style="color: var(--text-secondary); font-size: 0.875rem; margin-left: auto;"></span>
+            </div>
+        `;
+        
+        updateClientCount();
+    } catch (error) {
+        console.error('Error loading client settings:', error);
+        container.innerHTML = `<div class="error-state">Error loading client settings: ${escapeHtml(error.message)}</div>`;
+    }
+}
+
+export function updateClientSettings() {
+    updateClientCount();
+}
+
+export function updateClientCount() {
+    const checkboxes = document.querySelectorAll('.client-checkbox:checked');
+    const count = checkboxes.length;
+    const total = document.querySelectorAll('.client-checkbox').length;
+    const countSpan = document.getElementById('clientCount');
+    if (countSpan) {
+        countSpan.textContent = `${count} of ${total} clients enabled`;
+    }
+}
+
+export function selectAllClients() {
+    document.querySelectorAll('.client-checkbox').forEach(cb => cb.checked = true);
+    updateClientCount();
+}
+
+export function deselectAllClients() {
+    document.querySelectorAll('.client-checkbox').forEach(cb => cb.checked = false);
+    updateClientCount();
+}
+
+export async function saveClientSettings() {
+    try {
+        const checkboxes = document.querySelectorAll('.client-checkbox');
+        const clients = {};
+        
+        checkboxes.forEach(cb => {
+            const client = cb.dataset.client;
+            clients[client] = cb.checked;
+        });
+        
+        const response = await fetch('/api/playback/clients', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ clients })
+        });
+        
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.error || 'Failed to save client settings');
+        }
+        
+        alert('Client settings saved successfully! Changes will apply to newly analyzed videos.');
+        
+        // Reload settings to show updated state
+        loadClientSettings();
+    } catch (error) {
+        console.error('Error saving client settings:', error);
+        alert(`Error saving client settings: ${error.message}`);
+    }
+}
+
+// Sonarr Settings Functions
+export async function loadSonarrSettings() {
+    try {
+        const response = await fetch('/api/servarr/sonarr/settings');
+        if (!response.ok) return;
+        
+        const settings = await response.json();
+        
+        const baseUrlInput = document.getElementById('sonarrUrl');
+        const apiKeyInput = document.getElementById('sonarrApiKey');
+        const enabledInput = document.getElementById('sonarrEnabled');
+        
+        if (baseUrlInput) baseUrlInput.value = settings.baseUrl || '';
+        if (apiKeyInput) apiKeyInput.value = settings.apiKey || '';
+        if (enabledInput) enabledInput.checked = settings.enabled || false;
+    } catch (error) {
+        console.error('Error loading Sonarr settings:', error);
+    }
+}
+
+async function saveSonarrSettings() {
+    try {
+        const baseUrl = document.getElementById('sonarrUrl').value;
+        const apiKey = document.getElementById('sonarrApiKey').value;
+        const enabled = document.getElementById('sonarrEnabled').checked;
+
+        if (!baseUrl) {
+            alert('Please enter Base URL');
+            return;
+        }
+
+        if (!apiKey) {
+            alert('Please enter API Key');
+            return;
+        }
+
+        const settings = {
+            baseUrl: baseUrl,
+            apiKey: apiKey,
+            enabled: enabled
+        };
+
+        const response = await fetch('/api/servarr/sonarr/settings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(settings)
+        });
+
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.error || 'Failed to save Sonarr settings');
+        }
+
+        alert('Sonarr settings saved successfully! The service will reconnect with the new settings.');
+
+        setTimeout(() => {
+            loadServarrStatus();
+        }, 1000);
+    } catch (error) {
+        console.error('Error saving Sonarr settings:', error);
+        alert(`Error saving Sonarr settings: ${error.message}`);
+    }
+}
+
+export { saveSonarrSettings };
+window.saveSonarrSettings = saveSonarrSettings;
+
+async function testSonarrConnection(event) {
+    const button = event?.target?.closest('button') || document.querySelector('button[onclick="testSonarrConnection(event)"]');
+    const statusSpan = document.getElementById('sonarrTestStatus');
+    const baseUrl = document.getElementById('sonarrUrl').value;
+    const apiKey = document.getElementById('sonarrApiKey').value;
+
+    if (!baseUrl) {
+        alert('Please enter Base URL before testing');
+        return;
+    }
+
+    if (!apiKey) {
+        alert('Please enter API Key before testing');
+        return;
+    }
+
+    if (button) {
+        button.disabled = true;
+        button.style.opacity = '0.7';
+    }
+    if (statusSpan) statusSpan.textContent = '🔄 ';
+
+    try {
+        const response = await fetch('/api/servarr/sonarr/test', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ baseUrl, apiKey })
+        });
+
+        const result = await response.json();
+        
+        if (result.success) {
+            if (statusSpan) statusSpan.textContent = '✓ ';
+            alert(`Connection successful!${result.version ? `\nVersion: ${result.version}` : ''}`);
+        } else {
+            if (statusSpan) statusSpan.textContent = '✗ ';
+            alert(`Connection failed: ${result.message}`);
+        }
+    } catch (error) {
+        if (statusSpan) statusSpan.textContent = '✗ ';
+        alert(`Error testing connection: ${error.message}`);
+    } finally {
+        if (button) {
+            button.disabled = false;
+            button.style.opacity = '1';
+        }
+        setTimeout(() => {
+            if (statusSpan) statusSpan.textContent = '';
+        }, 3000);
+    }
+}
+
+export { testSonarrConnection };
+window.testSonarrConnection = testSonarrConnection;
+
+// Radarr Settings Functions
+export async function loadRadarrSettings() {
+    try {
+        const response = await fetch('/api/servarr/radarr/settings');
+        if (!response.ok) return;
+        
+        const settings = await response.json();
+        
+        const baseUrlInput = document.getElementById('radarrUrl');
+        const apiKeyInput = document.getElementById('radarrApiKey');
+        const enabledInput = document.getElementById('radarrEnabled');
+        
+        if (baseUrlInput) baseUrlInput.value = settings.baseUrl || '';
+        if (apiKeyInput) apiKeyInput.value = settings.apiKey || '';
+        if (enabledInput) enabledInput.checked = settings.enabled || false;
+    } catch (error) {
+        console.error('Error loading Radarr settings:', error);
+    }
+}
+
+async function saveRadarrSettings() {
+    try {
+        const baseUrl = document.getElementById('radarrUrl').value;
+        const apiKey = document.getElementById('radarrApiKey').value;
+        const enabled = document.getElementById('radarrEnabled').checked;
+
+        if (!baseUrl) {
+            alert('Please enter Base URL');
+            return;
+        }
+
+        if (!apiKey) {
+            alert('Please enter API Key');
+            return;
+        }
+
+        const settings = {
+            baseUrl: baseUrl,
+            apiKey: apiKey,
+            enabled: enabled
+        };
+
+        const response = await fetch('/api/servarr/radarr/settings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(settings)
+        });
+
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.error || 'Failed to save Radarr settings');
+        }
+
+        alert('Radarr settings saved successfully! The service will reconnect with the new settings.');
+
+        setTimeout(() => {
+            loadServarrStatus();
+        }, 1000);
+    } catch (error) {
+        console.error('Error saving Radarr settings:', error);
+        alert(`Error saving Radarr settings: ${error.message}`);
+    }
+}
+
+export { saveRadarrSettings };
+window.saveRadarrSettings = saveRadarrSettings;
+
+async function testRadarrConnection(event) {
+    const button = event?.target?.closest('button') || document.querySelector('button[onclick="testRadarrConnection(event)"]');
+    const statusSpan = document.getElementById('radarrTestStatus');
+    const baseUrl = document.getElementById('radarrUrl').value;
+    const apiKey = document.getElementById('radarrApiKey').value;
+
+    if (!baseUrl) {
+        alert('Please enter Base URL before testing');
+        return;
+    }
+
+    if (!apiKey) {
+        alert('Please enter API Key before testing');
+        return;
+    }
+
+    if (button) {
+        button.disabled = true;
+        button.style.opacity = '0.7';
+    }
+    if (statusSpan) statusSpan.textContent = '🔄 ';
+
+    try {
+        const response = await fetch('/api/servarr/radarr/test', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ baseUrl, apiKey })
+        });
+
+        const result = await response.json();
+        
+        if (result.success) {
+            if (statusSpan) statusSpan.textContent = '✓ ';
+            alert(`Connection successful!${result.version ? `\nVersion: ${result.version}` : ''}`);
+        } else {
+            if (statusSpan) statusSpan.textContent = '✗ ';
+            alert(`Connection failed: ${result.message}`);
+        }
+    } catch (error) {
+        if (statusSpan) statusSpan.textContent = '✗ ';
+        alert(`Error testing connection: ${error.message}`);
+    } finally {
+        if (button) {
+            button.disabled = false;
+            button.style.opacity = '1';
+        }
+        setTimeout(() => {
+            if (statusSpan) statusSpan.textContent = '';
+        }, 3000);
+    }
+}
+
+export { testRadarrConnection };
+window.testRadarrConnection = testRadarrConnection;
+
+// Path Mapping Functions
+let sonarrPathMappings = [];
+let radarrPathMappings = [];
+
+export async function loadSonarrPathMappings() {
+    try {
+        const response = await fetch('/api/servarr/sonarr/path-mappings');
+        if (!response.ok) {
+            sonarrPathMappings = [];
+            renderSonarrPathMappings();
+            return;
+        }
+        
+        const data = await response.json();
+        sonarrPathMappings = data.mappings || [];
+        renderSonarrPathMappings();
+    } catch (error) {
+        console.error('Error loading Sonarr path mappings:', error);
+        sonarrPathMappings = [];
+        renderSonarrPathMappings();
+    }
+}
+
+function renderSonarrPathMappings() {
+    const container = document.getElementById('sonarrPathMappingsContainer');
+    if (!container) return;
+    
+    if (sonarrPathMappings.length === 0) {
+        container.innerHTML = '<p style="color: var(--text-secondary); font-size: 0.875rem; margin: 0;">No path mappings configured. Add a mapping if Sonarr and Optimarr see different paths.</p>';
+        return;
+    }
+    
+    container.innerHTML = sonarrPathMappings.map((mapping, index) => `
+        <div class="path-mapping-item" style="display: flex; gap: 0.75rem; align-items: center; margin-bottom: 0.75rem; padding: 0.75rem; background-color: var(--bg-secondary); border-radius: 4px; border: 1px solid var(--border-color);">
+            <div style="flex: 1; display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
+                <div style="flex: 1; min-width: 200px;">
+                    <label style="font-size: 0.75rem; color: var(--text-secondary); display: block; margin-bottom: 0.25rem;">From (Sonarr path)</label>
+                    <input type="text" class="form-control path-mapping-from" data-index="${index}" value="${escapeHtml(mapping.From)}" placeholder="/data/tv" style="font-size: 0.875rem;">
+                </div>
+                <div style="flex: 1; min-width: 200px;">
+                    <label style="font-size: 0.75rem; color: var(--text-secondary); display: block; margin-bottom: 0.25rem;">To (Optimarr path)</label>
+                    <input type="text" class="form-control path-mapping-to" data-index="${index}" value="${escapeHtml(mapping.To)}" placeholder="/mnt/media/tv" style="font-size: 0.875rem;">
+                </div>
+            </div>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="removeSonarrPathMapping(${index})" style="flex-shrink: 0;">Remove</button>
+        </div>
+    `).join('');
+}
+
+export function addSonarrPathMapping() {
+    sonarrPathMappings.push({ From: '', To: '' });
+    renderSonarrPathMappings();
+}
+
+export function removeSonarrPathMapping(index) {
+    sonarrPathMappings.splice(index, 1);
+    renderSonarrPathMappings();
+}
+
+export async function saveSonarrPathMappings() {
+    try {
+        // Update mappings from inputs
+        document.querySelectorAll('.path-mapping-from').forEach((input, index) => {
+            if (sonarrPathMappings[index]) {
+                sonarrPathMappings[index].From = input.value.trim();
+            }
+        });
+        document.querySelectorAll('.path-mapping-to').forEach((input, index) => {
+            if (sonarrPathMappings[index]) {
+                sonarrPathMappings[index].To = input.value.trim();
+            }
+        });
+        
+        // Filter out empty mappings
+        const validMappings = sonarrPathMappings.filter(m => m.From && m.To);
+        
+        const response = await fetch('/api/servarr/sonarr/path-mappings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(validMappings)
+        });
+        
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.error || 'Failed to save path mappings');
+        }
+        
+        sonarrPathMappings = validMappings;
+        renderSonarrPathMappings();
+        alert('Path mappings saved successfully!');
+    } catch (error) {
+        console.error('Error saving Sonarr path mappings:', error);
+        alert(`Error saving path mappings: ${error.message}`);
+    }
+}
+
+export async function loadRadarrPathMappings() {
+    try {
+        const response = await fetch('/api/servarr/radarr/path-mappings');
+        if (!response.ok) {
+            radarrPathMappings = [];
+            renderRadarrPathMappings();
+            return;
+        }
+        
+        const data = await response.json();
+        radarrPathMappings = data.mappings || [];
+        renderRadarrPathMappings();
+    } catch (error) {
+        console.error('Error loading Radarr path mappings:', error);
+        radarrPathMappings = [];
+        renderRadarrPathMappings();
+    }
+}
+
+function renderRadarrPathMappings() {
+    const container = document.getElementById('radarrPathMappingsContainer');
+    if (!container) return;
+    
+    if (radarrPathMappings.length === 0) {
+        container.innerHTML = '<p style="color: var(--text-secondary); font-size: 0.875rem; margin: 0;">No path mappings configured. Add a mapping if Radarr and Optimarr see different paths.</p>';
+        return;
+    }
+    
+    container.innerHTML = radarrPathMappings.map((mapping, index) => `
+        <div class="path-mapping-item" style="display: flex; gap: 0.75rem; align-items: center; margin-bottom: 0.75rem; padding: 0.75rem; background-color: var(--bg-secondary); border-radius: 4px; border: 1px solid var(--border-color);">
+            <div style="flex: 1; display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
+                <div style="flex: 1; min-width: 200px;">
+                    <label style="font-size: 0.75rem; color: var(--text-secondary); display: block; margin-bottom: 0.25rem;">From (Radarr path)</label>
+                    <input type="text" class="form-control path-mapping-from" data-index="${index}" value="${escapeHtml(mapping.From)}" placeholder="/data/movies" style="font-size: 0.875rem;">
+                </div>
+                <div style="flex: 1; min-width: 200px;">
+                    <label style="font-size: 0.75rem; color: var(--text-secondary); display: block; margin-bottom: 0.25rem;">To (Optimarr path)</label>
+                    <input type="text" class="form-control path-mapping-to" data-index="${index}" value="${escapeHtml(mapping.To)}" placeholder="/mnt/media/movies" style="font-size: 0.875rem;">
+                </div>
+            </div>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="removeRadarrPathMapping(${index})" style="flex-shrink: 0;">Remove</button>
+        </div>
+    `).join('');
+}
+
+export function addRadarrPathMapping() {
+    radarrPathMappings.push({ From: '', To: '' });
+    renderRadarrPathMappings();
+}
+
+export function removeRadarrPathMapping(index) {
+    radarrPathMappings.splice(index, 1);
+    renderRadarrPathMappings();
+}
+
+export async function saveRadarrPathMappings() {
+    try {
+        // Update mappings from inputs
+        document.querySelectorAll('#radarrPathMappingsContainer .path-mapping-from').forEach((input, index) => {
+            if (radarrPathMappings[index]) {
+                radarrPathMappings[index].From = input.value.trim();
+            }
+        });
+        document.querySelectorAll('#radarrPathMappingsContainer .path-mapping-to').forEach((input, index) => {
+            if (radarrPathMappings[index]) {
+                radarrPathMappings[index].To = input.value.trim();
+            }
+        });
+        
+        // Filter out empty mappings
+        const validMappings = radarrPathMappings.filter(m => m.From && m.To);
+        
+        const response = await fetch('/api/servarr/radarr/path-mappings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(validMappings)
+        });
+        
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.error || 'Failed to save path mappings');
+        }
+        
+        radarrPathMappings = validMappings;
+        renderRadarrPathMappings();
+        alert('Path mappings saved successfully!');
+    } catch (error) {
+        console.error('Error saving Radarr path mappings:', error);
+        alert(`Error saving path mappings: ${error.message}`);
+    }
+}
+
+// Export to window for onclick handlers
+window.loadSonarrPathMappings = loadSonarrPathMappings;
+window.addSonarrPathMapping = addSonarrPathMapping;
+window.removeSonarrPathMapping = removeSonarrPathMapping;
+window.saveSonarrPathMappings = saveSonarrPathMappings;
+window.loadRadarrPathMappings = loadRadarrPathMappings;
+window.addRadarrPathMapping = addRadarrPathMapping;
+window.removeRadarrPathMapping = removeRadarrPathMapping;
+window.saveRadarrPathMappings = saveRadarrPathMappings;
+
 // Export to window for onclick handlers
 window.updateCompatibilityOverride = updateCompatibilityOverride;
 window.saveCompatibilitySettings = saveCompatibilitySettings;
 window.resetCompatibilitySettings = resetCompatibilitySettings;
 window.saveJellyfinSettings = saveJellyfinSettings;
+window.loadClientSettings = loadClientSettings;
+window.updateClientSettings = updateClientSettings;
+window.selectAllClients = selectAllClients;
+window.deselectAllClients = deselectAllClients;
+window.saveClientSettings = saveClientSettings;
+window.loadSonarrSettings = loadSonarrSettings;
+window.loadRadarrSettings = loadRadarrSettings;
 

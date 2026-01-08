@@ -17,12 +17,53 @@ export async function loadServarrStatus() {
         }
 
         const status = await response.json();
+        
+        // Update status display in settings
+        updateServarrStatusDisplay(status);
     } catch (error) {
         console.error('Error loading Servarr status:', error);
+        // Set status to unknown on error
+        const radarrStatus = document.getElementById('radarrStatusText');
+        const sonarrStatus = document.getElementById('sonarrStatusText');
+        if (radarrStatus) radarrStatus.textContent = 'Unknown';
+        if (sonarrStatus) sonarrStatus.textContent = 'Unknown';
     }
     
     // Load Jellyfin status separately
     loadJellyfinStatus();
+}
+
+function updateServarrStatusDisplay(status) {
+    const radarrStatus = document.getElementById('radarrStatusText');
+    const sonarrStatus = document.getElementById('sonarrStatusText');
+    
+    if (radarrStatus && status.radarr) {
+        radarrStatus.className = 'status-badge';
+        if (!status.radarr.enabled) {
+            radarrStatus.textContent = 'Disabled';
+            radarrStatus.classList.add('disabled');
+        } else if (status.radarr.connected) {
+            radarrStatus.textContent = `Connected (${status.radarr.version || 'Unknown'})`;
+            radarrStatus.classList.add('connected');
+        } else {
+            radarrStatus.textContent = 'Disconnected';
+            radarrStatus.classList.add('disconnected');
+        }
+    }
+    
+    if (sonarrStatus && status.sonarr) {
+        sonarrStatus.className = 'status-badge';
+        if (!status.sonarr.enabled) {
+            sonarrStatus.textContent = 'Disabled';
+            sonarrStatus.classList.add('disabled');
+        } else if (status.sonarr.connected) {
+            sonarrStatus.textContent = `Connected (${status.sonarr.version || 'Unknown'})`;
+            sonarrStatus.classList.add('connected');
+        } else {
+            sonarrStatus.textContent = 'Disconnected';
+            sonarrStatus.classList.add('disconnected');
+        }
+    }
 }
 
 export function updateStatusBadge(elementId, serviceStatus) {
@@ -45,7 +86,7 @@ export function updateStatusBadge(elementId, serviceStatus) {
 
 // Test Connection Functions
 export async function testJellyfinConnection() {
-    const button = event.target.closest('button');
+    const button = event?.target?.closest('button') || document.querySelector('button[onclick="testJellyfinConnection()"]');
     const statusSpan = document.getElementById('jellyfinTestStatus');
     const baseUrl = document.getElementById('jellyfinUrl').value;
     const apiKey = document.getElementById('jellyfinApiKey').value;
@@ -62,7 +103,10 @@ export async function testJellyfinConnection() {
         return;
     }
 
-    if (button) button.disabled = true;
+    if (button) {
+        button.disabled = true;
+        button.style.opacity = '0.7';
+    }
     if (statusSpan) statusSpan.textContent = '🔄 ';
 
     try {
@@ -85,7 +129,10 @@ export async function testJellyfinConnection() {
         if (statusSpan) statusSpan.textContent = '✗ ';
         alert(`Error testing connection: ${error.message}`);
     } finally {
-        if (button) button.disabled = false;
+        if (button) {
+            button.disabled = false;
+            button.style.opacity = '1';
+        }
         setTimeout(() => {
             if (statusSpan) statusSpan.textContent = '';
         }, 3000);
@@ -133,7 +180,26 @@ export async function loadJellyfinClients() {
             return;
         }
         
-        const data = await response.json();
+        // Check if response is actually JSON
+        const contentType = response.headers.get('content-type');
+        if (!contentType || !contentType.includes('application/json')) {
+            console.warn('Expected JSON response but got:', contentType);
+            const box = document.getElementById('jellyfinClientsBox');
+            if (box) box.style.display = 'none';
+            return;
+        }
+        
+        let data;
+        try {
+            data = await response.json();
+        } catch (jsonError) {
+            console.error('Error parsing JSON response:', jsonError);
+            // If JSON parsing fails, the response might be HTML (error page)
+            const box = document.getElementById('jellyfinClientsBox');
+            if (box) box.style.display = 'none';
+            return;
+        }
+        
         const container = document.getElementById('jellyfinClients');
         const box = document.getElementById('jellyfinClientsBox');
         
@@ -253,17 +319,46 @@ export async function loadJellyfinClients() {
     }
 }
 
-export async function syncJellyfinPlayback() {
-    const button = event.target.closest('button');
-    const statusSpan = document.getElementById('jellyfinSyncStatus');
+export function toggleSyncDaysInput() {
+    const syncAllCheckbox = document.getElementById('syncAllHistory');
     const daysInput = document.getElementById('syncDays');
-    const days = daysInput ? parseInt(daysInput.value) || 30 : 30;
+    const helpText = document.getElementById('syncHelpText');
+    
+    if (syncAllCheckbox && daysInput && helpText) {
+        if (syncAllCheckbox.checked) {
+            daysInput.disabled = true;
+            daysInput.style.opacity = '0.5';
+            helpText.textContent = 'Import all historical playback data from Jellyfin. This may take a while for large libraries.';
+        } else {
+            daysInput.disabled = false;
+            daysInput.style.opacity = '1';
+            const days = daysInput.value || 30;
+            helpText.textContent = `Import playback history from the last ${days} days. Check "Sync All" to import complete history.`;
+        }
+    }
+}
 
-    if (button) button.disabled = true;
-    if (statusSpan) statusSpan.textContent = '🔄 Syncing...';
+export async function syncJellyfinPlayback(event) {
+    const button = event?.target?.closest('button') || document.querySelector('button[onclick="syncJellyfinPlayback(event)"]');
+    const statusSpan = document.getElementById('jellyfinSyncStatus');
+    const syncAllCheckbox = document.getElementById('syncAllHistory');
+    const daysInput = document.getElementById('syncDays');
+    
+    const syncAll = syncAllCheckbox?.checked || false;
+    const days = syncAll ? null : (daysInput ? parseInt(daysInput.value) || 30 : 30);
+
+    if (button) {
+        button.disabled = true;
+        button.style.opacity = '0.7';
+    }
+    if (statusSpan) statusSpan.textContent = '🔄 ';
 
     try {
-        const response = await fetch(`/api/playback/sync?days=${days}`, {
+        const url = syncAll 
+            ? '/api/playback/sync'
+            : `/api/playback/sync?days=${days}`;
+            
+        const response = await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' }
         });
@@ -274,17 +369,709 @@ export async function syncJellyfinPlayback() {
         }
 
         const result = await response.json();
+        const syncId = result.syncId;
         
-        if (statusSpan) statusSpan.textContent = '✓ ';
-        alert(`Playback history synced successfully!\n\nSynced: ${result.synced} records\nMatched: ${result.matched} with local libraries\nTotal: ${result.total} records found`);
+        if (!syncId) {
+            // Fallback to old behavior if no syncId
+            if (statusSpan) statusSpan.textContent = '✓ ';
+            const syncType = syncAll ? 'all historical data' : `last ${days} days`;
+            alert(`Playback history synced successfully!\n\nSynced: ${result.synced} records\nMatched: ${result.matched} with local libraries\nTotal: ${result.total} records found\n\nSynced: ${syncType}`);
+            
+            // Reload Jellyfin clients to show updated data
+            loadJellyfinClients();
+            
+            // Reload playback dashboard if on playback tab
+            const activeTab = document.querySelector('.nav-item.active');
+            if (activeTab && activeTab.getAttribute('data-tab') === 'playback') {
+                const { loadPlaybackDashboard, loadPlaybackHistory } = await import('./playback.js');
+                loadPlaybackDashboard();
+                loadPlaybackHistory();
+            }
+            
+            if (button) {
+                button.disabled = false;
+                button.style.opacity = '1';
+            }
+            setTimeout(() => {
+                if (statusSpan) statusSpan.textContent = '';
+            }, 5000);
+            return;
+        }
         
-        // Reload Jellyfin clients to show updated data
-        loadJellyfinClients();
+        // Poll for progress
+        await pollSyncProgress(syncId, statusSpan, button, syncAll, days);
+        
     } catch (error) {
         if (statusSpan) statusSpan.textContent = '✗ ';
         alert(`Error syncing playback history: ${error.message}`);
+        if (button) {
+            button.disabled = false;
+            button.style.opacity = '1';
+        }
+        setTimeout(() => {
+            if (statusSpan) statusSpan.textContent = '';
+        }, 5000);
+    }
+}
+
+async function pollSyncProgress(syncId, statusSpan, button, syncAll, days) {
+    const maxAttempts = 3600; // 30 minutes max (3600 * 0.5s = 30 minutes)
+    let attempts = 0;
+    let lastProcessed = 0;
+    
+    const updateStatus = (progress) => {
+        if (statusSpan) {
+            if (progress.status === 'completed') {
+                statusSpan.textContent = '✓ ';
+            } else if (progress.status === 'error') {
+                statusSpan.textContent = '✗ ';
+            } else {
+                const percent = progress.total > 0 
+                    ? Math.round((progress.processed / progress.total) * 100) 
+                    : 0;
+                statusSpan.textContent = `🔄 ${progress.processed}${progress.total > 0 ? `/${progress.total} user(s)` : ''} (${percent}%)`;
+                if (progress.currentItem) {
+                    statusSpan.title = progress.currentItem;
+                }
+            }
+        }
+    };
+    
+    while (attempts < maxAttempts) {
+        try {
+            const response = await fetch(`/api/playback/sync/progress/${syncId}`);
+            if (!response.ok) {
+                throw new Error('Failed to get sync progress');
+            }
+            
+            const progress = await response.json();
+            updateStatus(progress);
+            
+            // Log progress if it changed (users change less frequently)
+            if (progress.processed > lastProcessed || progress.status !== 'running') {
+                console.log(`Sync progress: ${progress.processed}/${progress.total} users processed, ${progress.synced} synced, ${progress.matched} matched. Status: ${progress.status}`);
+                lastProcessed = progress.processed;
+            }
+            
+            if (progress.status === 'completed') {
+                if (statusSpan) statusSpan.textContent = '✓ ';
+                const syncType = syncAll ? 'all historical data' : `last ${days} days`;
+                alert(`Playback history synced successfully!\n\nProcessed: ${progress.processed} user(s)\nSynced: ${progress.synced} records\nMatched: ${progress.matched} with local libraries\n\nSynced: ${syncType}`);
+                
+                // Reload Jellyfin clients to show updated data
+                loadJellyfinClients();
+                
+                // Reload playback dashboard if on playback tab
+                const activeTab = document.querySelector('.nav-item.active');
+                if (activeTab && activeTab.getAttribute('data-tab') === 'playback') {
+                    const { loadPlaybackDashboard, loadPlaybackHistory } = await import('./playback.js');
+                    loadPlaybackDashboard();
+                    loadPlaybackHistory();
+                }
+                
+                if (button) {
+                    button.disabled = false;
+                    button.style.opacity = '1';
+                }
+                setTimeout(() => {
+                    if (statusSpan) statusSpan.textContent = '';
+                }, 5000);
+                return;
+            }
+            
+            if (progress.status === 'error') {
+                if (statusSpan) statusSpan.textContent = '✗ ';
+                alert(`Error syncing playback history: ${progress.error || 'Unknown error'}`);
+                if (button) {
+                    button.disabled = false;
+                    button.style.opacity = '1';
+                }
+                setTimeout(() => {
+                    if (statusSpan) statusSpan.textContent = '';
+                }, 5000);
+                return;
+            }
+            
+            // Wait 500ms before next poll
+            await new Promise(resolve => setTimeout(resolve, 500));
+            attempts++;
+        } catch (error) {
+            console.error('Error polling sync progress:', error);
+            // Continue polling even on error
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            attempts++;
+        }
+    }
+    
+    // Check if sync is still running before giving up
+    try {
+        const finalResponse = await fetch(`/api/playback/sync/progress/${syncId}`);
+        if (finalResponse.ok) {
+            const finalProgress = await finalResponse.json();
+            if (finalProgress.status === 'running' || finalProgress.status === 'fetching' || finalProgress.status === 'migrating') {
+                // Sync is still running, continue polling but with longer intervals
+                if (statusSpan) {
+                    statusSpan.textContent = '🔄 ...';
+                    statusSpan.title = 'Sync is still running in the background. Progress will update automatically.';
+                }
+                if (button) {
+                    button.disabled = false;
+                    button.style.opacity = '1';
+                }
+                
+                // Continue polling but less frequently (every 5 seconds)
+                const continuePolling = setInterval(async () => {
+                    try {
+                        const response = await fetch(`/api/playback/sync/progress/${syncId}`);
+                        if (response.ok) {
+                            const progress = await response.json();
+                            updateStatus(progress);
+                            
+                            if (progress.status === 'completed' || progress.status === 'error') {
+                                clearInterval(continuePolling);
+                                if (progress.status === 'completed') {
+                                    if (statusSpan) statusSpan.textContent = '✓ ';
+                                    const syncType = syncAll ? 'all historical data' : `last ${days} days`;
+                                    alert(`Playback history synced successfully!\n\nProcessed: ${progress.processed} user(s)\nSynced: ${progress.synced} records\nMatched: ${progress.matched} with local libraries\n\nSynced: ${syncType}`);
+                                    
+                                    loadJellyfinClients();
+                                    
+                                    const activeTab = document.querySelector('.nav-item.active');
+                                    if (activeTab && activeTab.getAttribute('data-tab') === 'playback') {
+                                        const { loadPlaybackDashboard, loadPlaybackHistory } = await import('./playback.js');
+                                        loadPlaybackDashboard();
+                                        loadPlaybackHistory();
+                                    }
+                                } else {
+                                    if (statusSpan) statusSpan.textContent = '✗ ';
+                                    alert(`Error syncing playback history: ${progress.error || 'Unknown error'}`);
+                                }
+                                
+                                if (button) {
+                                    button.disabled = false;
+                                    button.style.opacity = '1';
+                                }
+                                setTimeout(() => {
+                                    if (statusSpan) statusSpan.textContent = '';
+                                }, 5000);
+                            }
+                        }
+                    } catch (error) {
+                        console.error('Error checking sync progress:', error);
+                    }
+                }, 5000); // Poll every 5 seconds
+                
+                return; // Exit the function but keep polling in background
+            }
+        }
+    } catch (error) {
+        console.error('Error checking final sync status:', error);
+    }
+    
+    // Timeout - sync not found or completed
+    if (statusSpan) statusSpan.textContent = '⚠ ';
+    alert('Sync is taking longer than expected. It may still be running in the background. You can check the status by refreshing the page.');
+    if (button) {
+        button.disabled = false;
+        button.style.opacity = '1';
+    }
+}
+
+export async function rematchPlaybackHistory(event) {
+    if (!confirm('Re-match all playback history with libraries?\n\nThis will attempt to match existing playback records with your current library paths and video analyses. This is useful if you added libraries after syncing playback history.')) {
+        return;
+    }
+
+    const button = event?.target?.closest('button') || document.querySelector('button[onclick="rematchPlaybackHistory(event)"]');
+    
+    if (button) {
+        button.disabled = true;
+        button.textContent = 'Re-matching...';
+        button.style.opacity = '0.7';
+    }
+
+    try {
+        const response = await fetch('/api/playback/rematch', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' }
+        });
+
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.error || 'Failed to re-match playback history');
+        }
+
+        const result = await response.json();
+        
+        alert(`Playback history re-matched successfully!\n\nMatched: ${result.matched} records\n- ${result.videoAnalysisMatches} with video analysis\n- ${result.libraryPathMatches} with library paths\n\nTotal processed: ${result.total} records`);
+        
+        // Reload playback history if on playback tab
+        const activeTab = document.querySelector('.nav-item.active');
+        if (activeTab && activeTab.getAttribute('data-tab') === 'playback') {
+            const { loadPlaybackHistory, loadPlaybackDashboard } = await import('./playback.js');
+            loadPlaybackHistory();
+            loadPlaybackDashboard();
+        }
+    } catch (error) {
+        alert(`Error re-matching playback history: ${error.message}`);
     } finally {
-        if (button) button.disabled = false;
+        if (button) {
+            button.disabled = false;
+            button.textContent = 'Re-match with Libraries';
+            button.style.opacity = '1';
+        }
+    }
+}
+
+export async function matchVideosWithServarr() {
+    const button = event?.target?.closest('button') || document.querySelector('button[onclick="matchVideosWithServarr()"]');
+    const statusSpan = document.getElementById('matchVideosStatus');
+    
+    // Check for both possible status spans (Sonarr and Radarr)
+    const sonarrStatusSpan = document.getElementById('matchVideosStatusSonarr');
+    const radarrStatusSpan = document.getElementById('matchVideosStatusRadarr');
+    const activeStatusSpan = statusSpan || sonarrStatusSpan || radarrStatusSpan;
+    
+    // Store original button text
+    const originalButtonText = button ? button.textContent.trim() : 'Match Videos';
+    
+    if (button) {
+        button.disabled = true;
+        button.style.opacity = '0.7';
+        // Update button text while keeping the status span
+        const statusSpanInButton = button.querySelector('span[id^="matchVideosStatus"]');
+        if (statusSpanInButton) {
+            statusSpanInButton.textContent = '🔄';
+        } else {
+            button.textContent = 'Matching...';
+        }
+    }
+    if (activeStatusSpan) activeStatusSpan.textContent = '🔄 Starting...';
+    
+    try {
+        const response = await fetch('/api/servarr/match-videos', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' }
+        });
+        
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.error || 'Failed to match videos');
+        }
+        
+        const result = await response.json();
+        
+        if (result.matchId) {
+            // Start polling for progress
+            await pollMatchProgress(result.matchId, activeStatusSpan, button, originalButtonText);
+        } else {
+            // Fallback to old behavior if no matchId
+            if (activeStatusSpan) activeStatusSpan.textContent = '✓ Matched';
+            alert(`Video matching completed!\n\nMatched: ${result.matched || 0} videos`);
+            if (button) {
+                button.disabled = false;
+                button.style.opacity = '1';
+                const statusSpanInButton = button.querySelector('span[id^="matchVideosStatus"]');
+                if (statusSpanInButton) {
+                    statusSpanInButton.textContent = '';
+                } else {
+                    button.textContent = originalButtonText;
+                }
+            }
+            setTimeout(() => {
+                if (activeStatusSpan) activeStatusSpan.textContent = '';
+            }, 3000);
+        }
+    } catch (error) {
+        console.error('Error matching videos:', error);
+        if (activeStatusSpan) activeStatusSpan.textContent = '✗ Error';
+        alert(`Error matching videos: ${error.message}`);
+        if (button) {
+            button.disabled = false;
+            button.style.opacity = '1';
+            const statusSpanInButton = button.querySelector('span[id^="matchVideosStatus"]');
+            if (statusSpanInButton) {
+                statusSpanInButton.textContent = '';
+            } else {
+                button.textContent = originalButtonText;
+            }
+        }
+        setTimeout(() => {
+            if (activeStatusSpan) activeStatusSpan.textContent = '';
+        }, 5000);
+    }
+}
+
+async function pollMatchProgress(matchId, statusSpan, button, originalButtonText) {
+    const maxAttempts = 3600; // 30 minutes max (3600 * 0.5s = 30 minutes)
+    let attempts = 0;
+    let lastProcessed = 0;
+    
+    const updateStatus = (progress) => {
+        if (statusSpan) {
+            if (progress.status === 'completed') {
+                statusSpan.textContent = '✓ Matched';
+            } else if (progress.status === 'error') {
+                statusSpan.textContent = '✗ Error';
+            } else {
+                const percent = progress.total > 0 
+                    ? Math.round((progress.processed / progress.total) * 100) 
+                    : 0;
+                statusSpan.textContent = `🔄 ${progress.processed}${progress.total > 0 ? `/${progress.total}` : ''} (${percent}%)`;
+                if (progress.currentItem) {
+                    statusSpan.title = progress.currentItem;
+                }
+            }
+        }
+    };
+    
+    while (attempts < maxAttempts) {
+        try {
+            const response = await fetch(`/api/servarr/match-videos/progress/${matchId}`);
+            if (!response.ok) {
+                throw new Error('Failed to get match progress');
+            }
+            
+            const progress = await response.json();
+            updateStatus(progress);
+            
+            // Log progress if it changed
+            if (progress.processed > lastProcessed || progress.status !== 'running') {
+                console.log(`Match progress: ${progress.processed}/${progress.total} videos processed, ${progress.matched} matched. Status: ${progress.status}`);
+                lastProcessed = progress.processed;
+            }
+            
+            if (progress.status === 'completed') {
+                if (statusSpan) statusSpan.textContent = '✓ Matched';
+                alert(`Video matching completed!\n\nProcessed: ${progress.processed} videos\nMatched: ${progress.matched} videos${progress.errors > 0 ? `\nErrors: ${progress.errors}` : ''}`);
+                
+                if (button) {
+                    button.disabled = false;
+                    button.style.opacity = '1';
+                    const statusSpanInButton = button.querySelector('span[id^="matchVideosStatus"]');
+                    if (statusSpanInButton) {
+                        statusSpanInButton.textContent = '';
+                    } else {
+                        button.textContent = originalButtonText;
+                    }
+                }
+                setTimeout(() => {
+                    if (statusSpan) statusSpan.textContent = '';
+                }, 5000);
+                return;
+            }
+            
+            if (progress.status === 'error') {
+                if (statusSpan) statusSpan.textContent = '✗ Error';
+                alert(`Error matching videos: ${progress.errorMessage || 'Unknown error'}`);
+                if (button) {
+                    button.disabled = false;
+                    button.style.opacity = '1';
+                    const statusSpanInButton = button.querySelector('span[id^="matchVideosStatus"]');
+                    if (statusSpanInButton) {
+                        statusSpanInButton.textContent = '';
+                    } else {
+                        button.textContent = originalButtonText;
+                    }
+                }
+                setTimeout(() => {
+                    if (statusSpan) statusSpan.textContent = '';
+                }, 5000);
+                return;
+            }
+            
+            // Wait 500ms before next poll
+            await new Promise(resolve => setTimeout(resolve, 500));
+            attempts++;
+        } catch (error) {
+            console.error('Error polling match progress:', error);
+            // Continue polling even on error
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            attempts++;
+        }
+    }
+    
+    // Timeout
+    if (statusSpan) statusSpan.textContent = '⚠ Timeout';
+    alert('Matching is taking longer than expected. It may still be running in the background.');
+    if (button) {
+        button.disabled = false;
+        button.style.opacity = '1';
+        const statusSpanInButton = button.querySelector('span[id^="matchVideosStatus"]');
+        if (statusSpanInButton) {
+            statusSpanInButton.textContent = '';
+        } else {
+            button.textContent = originalButtonText;
+        }
+    }
+}
+
+export async function syncRadarrLibrary() {
+    const button = document.querySelector('button[onclick="syncRadarrLibrary()"]');
+    const statusSpan = document.getElementById('radarrSyncStatus');
+    const resultDiv = document.getElementById('radarrSyncResult');
+    
+    if (button) {
+        button.disabled = true;
+        button.style.opacity = '0.7';
+    }
+    if (statusSpan) statusSpan.textContent = '🔄 ';
+    if (resultDiv) {
+        resultDiv.style.display = 'none';
+        resultDiv.innerHTML = '';
+    }
+
+    try {
+        const response = await fetch('/api/servarr/radarr/sync', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' }
+        });
+
+        const result = await response.json();
+        
+        if (result.success) {
+            if (statusSpan) statusSpan.textContent = '✓ ';
+            if (resultDiv) {
+                resultDiv.style.display = 'block';
+                resultDiv.innerHTML = `
+                    <div style="padding: 0.75rem; background-color: var(--bg-secondary); border-radius: 4px; border-left: 3px solid var(--success-color);">
+                        <strong>Sync completed successfully!</strong><br>
+                        Root folders found: ${result.rootFoldersFound}<br>
+                        Movies found: ${result.itemsFound}<br>
+                        Created paths: ${result.createdPaths}<br>
+                        Updated paths: ${result.updatedPaths}<br>
+                        Removed paths: ${result.removedPaths}<br>
+                        Duration: ${Math.round(result.duration?.totalSeconds || 0)}s
+                    </div>
+                `;
+            }
+            
+            // Automatically match videos after successful sync
+            setTimeout(async () => {
+                try {
+                    const matchResponse = await fetch('/api/servarr/match-videos', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                    if (matchResponse.ok) {
+                        const matchResult = await matchResponse.json();
+                        console.log(`Automatically matched ${matchResult.matched} videos with Sonarr`);
+                    }
+                } catch (error) {
+                    console.warn('Error auto-matching videos after Sonarr sync:', error);
+                }
+            }, 1000);
+            
+            // Reload libraries if on library tab
+            const activeTab = document.querySelector('.nav-item.active');
+            if (activeTab && activeTab.getAttribute('data-tab') === 'library') {
+                const { loadKnownLibraries } = await import('./library.js');
+                loadKnownLibraries();
+            }
+        } else {
+            if (statusSpan) statusSpan.textContent = '✗ ';
+            if (resultDiv) {
+                resultDiv.style.display = 'block';
+                resultDiv.innerHTML = `
+                    <div style="padding: 0.75rem; background-color: var(--bg-secondary); border-radius: 4px; border-left: 3px solid var(--danger-color);">
+                        <strong>Sync failed:</strong> ${escapeHtml(result.message || 'Unknown error')}
+                    </div>
+                `;
+            }
+        }
+    } catch (error) {
+        if (statusSpan) statusSpan.textContent = '✗ ';
+        if (resultDiv) {
+            resultDiv.style.display = 'block';
+            resultDiv.innerHTML = `
+                <div style="padding: 0.75rem; background-color: var(--bg-secondary); border-radius: 4px; border-left: 3px solid var(--danger-color);">
+                    <strong>Error:</strong> ${escapeHtml(error.message)}
+                </div>
+            `;
+        }
+    } finally {
+        if (button) {
+            button.disabled = false;
+            button.style.opacity = '1';
+        }
+        setTimeout(() => {
+            if (statusSpan) statusSpan.textContent = '';
+        }, 5000);
+    }
+}
+
+export async function syncSonarrLibrary() {
+    const button = document.querySelector('button[onclick="syncSonarrLibrary()"]');
+    const statusSpan = document.getElementById('sonarrSyncStatus');
+    const resultDiv = document.getElementById('sonarrSyncResult');
+    
+    if (button) {
+        button.disabled = true;
+        button.style.opacity = '0.7';
+    }
+    if (statusSpan) statusSpan.textContent = '🔄 ';
+    if (resultDiv) {
+        resultDiv.style.display = 'none';
+        resultDiv.innerHTML = '';
+    }
+
+    try {
+        const response = await fetch('/api/servarr/sonarr/sync', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' }
+        });
+
+        const result = await response.json();
+        
+        if (result.success) {
+            if (statusSpan) statusSpan.textContent = '✓ ';
+            if (resultDiv) {
+                resultDiv.style.display = 'block';
+                resultDiv.innerHTML = `
+                    <div style="padding: 0.75rem; background-color: var(--bg-secondary); border-radius: 4px; border-left: 3px solid var(--success-color);">
+                        <strong>Sync completed successfully!</strong><br>
+                        Root folders found: ${result.rootFoldersFound}<br>
+                        Series found: ${result.itemsFound}<br>
+                        Created paths: ${result.createdPaths}<br>
+                        Updated paths: ${result.updatedPaths}<br>
+                        Removed paths: ${result.removedPaths}<br>
+                        Duration: ${Math.round(result.duration?.totalSeconds || 0)}s
+                    </div>
+                `;
+            }
+            
+            // Automatically match videos after successful sync
+            setTimeout(async () => {
+                try {
+                    const matchResponse = await fetch('/api/servarr/match-videos', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                    if (matchResponse.ok) {
+                        const matchResult = await matchResponse.json();
+                        console.log(`Automatically matched ${matchResult.matched} videos with Sonarr`);
+                    }
+                } catch (error) {
+                    console.warn('Error auto-matching videos after Sonarr sync:', error);
+                }
+            }, 1000);
+            
+            // Reload libraries if on library tab
+            const activeTab = document.querySelector('.nav-item.active');
+            if (activeTab && activeTab.getAttribute('data-tab') === 'library') {
+                const { loadKnownLibraries } = await import('./library.js');
+                loadKnownLibraries();
+            }
+        } else {
+            if (statusSpan) statusSpan.textContent = '✗ ';
+            if (resultDiv) {
+                resultDiv.style.display = 'block';
+                resultDiv.innerHTML = `
+                    <div style="padding: 0.75rem; background-color: var(--bg-secondary); border-radius: 4px; border-left: 3px solid var(--danger-color);">
+                        <strong>Sync failed:</strong> ${escapeHtml(result.message || 'Unknown error')}
+                    </div>
+                `;
+            }
+        }
+    } catch (error) {
+        if (statusSpan) statusSpan.textContent = '✗ ';
+        if (resultDiv) {
+            resultDiv.style.display = 'block';
+            resultDiv.innerHTML = `
+                <div style="padding: 0.75rem; background-color: var(--bg-secondary); border-radius: 4px; border-left: 3px solid var(--danger-color);">
+                    <strong>Error:</strong> ${escapeHtml(error.message)}
+                </div>
+            `;
+        }
+    } finally {
+        if (button) {
+            button.disabled = false;
+            button.style.opacity = '1';
+        }
+        setTimeout(() => {
+            if (statusSpan) statusSpan.textContent = '';
+        }, 5000);
+    }
+}
+
+export async function syncAllServarrLibraries() {
+    const button = document.querySelector('button[onclick="syncAllServarrLibraries()"]');
+    const statusSpan = document.getElementById('allServarrSyncStatus');
+    const resultDiv = document.getElementById('servarrSyncResult');
+    
+    if (button) {
+        button.disabled = true;
+        button.style.opacity = '0.7';
+    }
+    if (statusSpan) statusSpan.textContent = '🔄 ';
+    if (resultDiv) {
+        resultDiv.style.display = 'none';
+        resultDiv.innerHTML = '';
+    }
+
+    try {
+        const response = await fetch('/api/servarr/sync-all', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' }
+        });
+
+        const result = await response.json();
+        
+        if (result.overallSuccess) {
+            if (statusSpan) statusSpan.textContent = '✓ ';
+            if (resultDiv) {
+                resultDiv.style.display = 'block';
+                const radarr = result.radarr || {};
+                const sonarr = result.sonarr || {};
+                resultDiv.innerHTML = `
+                    <div style="padding: 0.75rem; background-color: var(--bg-secondary); border-radius: 4px; border-left: 3px solid var(--success-color);">
+                        <strong>All syncs completed successfully!</strong><br><br>
+                        <strong>Radarr:</strong><br>
+                        Root folders: ${radarr.rootFoldersFound || 0}, Movies: ${radarr.itemsFound || 0}<br>
+                        Created: ${radarr.createdPaths || 0}, Updated: ${radarr.updatedPaths || 0}, Removed: ${radarr.removedPaths || 0}<br><br>
+                        <strong>Sonarr:</strong><br>
+                        Root folders: ${sonarr.rootFoldersFound || 0}, Series: ${sonarr.itemsFound || 0}<br>
+                        Created: ${sonarr.createdPaths || 0}, Updated: ${sonarr.updatedPaths || 0}, Removed: ${sonarr.removedPaths || 0}
+                    </div>
+                `;
+            }
+            
+            // Reload libraries if on library tab
+            const activeTab = document.querySelector('.nav-item.active');
+            if (activeTab && activeTab.getAttribute('data-tab') === 'library') {
+                const { loadKnownLibraries } = await import('./library.js');
+                loadKnownLibraries();
+            }
+        } else {
+            if (statusSpan) statusSpan.textContent = '⚠ ';
+            if (resultDiv) {
+                resultDiv.style.display = 'block';
+                const radarr = result.radarr || {};
+                const sonarr = result.sonarr || {};
+                resultDiv.innerHTML = `
+                    <div style="padding: 0.75rem; background-color: var(--bg-secondary); border-radius: 4px; border-left: 3px solid var(--warning-color);">
+                        <strong>Sync completed with warnings:</strong><br><br>
+                        <strong>Radarr:</strong> ${radarr.success ? '✓' : '✗'} ${escapeHtml(radarr.message || 'Unknown')}<br>
+                        <strong>Sonarr:</strong> ${sonarr.success ? '✓' : '✗'} ${escapeHtml(sonarr.message || 'Unknown')}
+                    </div>
+                `;
+            }
+        }
+    } catch (error) {
+        if (statusSpan) statusSpan.textContent = '✗ ';
+        if (resultDiv) {
+            resultDiv.style.display = 'block';
+            resultDiv.innerHTML = `
+                <div style="padding: 0.75rem; background-color: var(--bg-secondary); border-radius: 4px; border-left: 3px solid var(--danger-color);">
+                    <strong>Error:</strong> ${escapeHtml(error.message)}
+                </div>
+            `;
+        }
+    } finally {
+        if (button) {
+            button.disabled = false;
+            button.style.opacity = '1';
+        }
         setTimeout(() => {
             if (statusSpan) statusSpan.textContent = '';
         }, 5000);
@@ -294,4 +1081,10 @@ export async function syncJellyfinPlayback() {
 // Export to window for onclick handlers
 window.testJellyfinConnection = testJellyfinConnection;
 window.syncJellyfinPlayback = syncJellyfinPlayback;
+window.toggleSyncDaysInput = toggleSyncDaysInput;
+window.rematchPlaybackHistory = rematchPlaybackHistory;
+window.syncRadarrLibrary = syncRadarrLibrary;
+window.syncSonarrLibrary = syncSonarrLibrary;
+window.matchVideosWithServarr = matchVideosWithServarr;
+window.syncAllServarrLibraries = syncAllServarrLibraries;
 

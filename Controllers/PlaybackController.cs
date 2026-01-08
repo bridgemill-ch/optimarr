@@ -5,6 +5,7 @@ using Microsoft.Extensions.Hosting;
 using Optimarr.Data;
 using Optimarr.Models;
 using Optimarr.Services;
+using System.IO;
 
 namespace Optimarr.Controllers
 {
@@ -224,7 +225,7 @@ namespace Optimarr.Controllers
         }
 
         [HttpPost("sync")]
-        public async Task<ActionResult<object>> SyncPlaybackHistory([FromQuery] int? days = 30)
+        public async Task<ActionResult<object>> SyncPlaybackHistory([FromQuery] int? days = null)
         {
             if (!_jellyfinService.IsEnabled || !_jellyfinService.IsConnected)
             {
@@ -233,9 +234,12 @@ namespace Optimarr.Controllers
 
             try
             {
-                _logger.LogInformation("Starting playback history sync (last {Days} days)", days);
+                // If days is null, sync all historical data
+                DateTime? startDate = days.HasValue ? DateTime.UtcNow.AddDays(-days.Value) : null;
                 
-                var startDate = DateTime.UtcNow.AddDays(-(days ?? 30));
+                _logger.LogInformation("Starting playback history sync {DateRange}", 
+                    startDate.HasValue ? $"(last {days} days)" : "(all historical data)");
+                
                 var historyItems = await _jellyfinService.GetPlaybackHistoryAsync(startDate, DateTime.UtcNow);
                 
                 _logger.LogInformation("Retrieved {Count} playback history items from Jellyfin", historyItems.Count);
@@ -318,7 +322,7 @@ namespace Optimarr.Controllers
             // Normalize path for comparison
             var normalizedPlaybackPath = NormalizePath(playback.FilePath);
 
-            // Try to match with VideoAnalysis by file path
+            // Step 1: Try to match with VideoAnalysis by file path (exact match)
             var videoAnalysis = await _dbContext.VideoAnalyses
                 .FirstOrDefaultAsync(v => NormalizePath(v.FilePath) == normalizedPlaybackPath);
 
@@ -327,7 +331,59 @@ namespace Optimarr.Controllers
                 playback.VideoAnalysisId = videoAnalysis.Id;
             }
 
-            // Try to match with LibraryPath
+            // Step 2: If path matching failed, try name-based matching
+            if (videoAnalysis == null && !string.IsNullOrEmpty(playback.ItemName))
+            {
+                // Load all video analyses into memory to avoid LINQ translation issues
+                var allVideoAnalyses = await _dbContext.VideoAnalyses
+                    .Select(v => new { v.Id, v.FilePath, v.FileName })
+                    .ToListAsync();
+
+                var normalizedItemName = NormalizeName(playback.ItemName);
+
+                foreach (var video in allVideoAnalyses)
+                {
+                    // Try matching by file name
+                    if (!string.IsNullOrEmpty(video.FileName))
+                    {
+                        var normalizedFileName = NormalizeName(Path.GetFileNameWithoutExtension(video.FileName));
+                        if (normalizedFileName == normalizedItemName || 
+                            normalizedFileName.Contains(normalizedItemName, StringComparison.OrdinalIgnoreCase) ||
+                            normalizedItemName.Contains(normalizedFileName, StringComparison.OrdinalIgnoreCase))
+                        {
+                            // Additional check: ensure the normalized names are similar enough
+                            if (AreNamesSimilar(normalizedItemName, normalizedFileName))
+                            {
+                                playback.VideoAnalysisId = video.Id;
+                                _logger.LogDebug("Matched playback '{ItemName}' with video '{FileName}' by name", 
+                                    playback.ItemName, video.FileName);
+                                break;
+                            }
+                        }
+                    }
+
+                    // Also try matching by path (extract filename from path)
+                    if (string.IsNullOrEmpty(video.FileName) && !string.IsNullOrEmpty(video.FilePath))
+                    {
+                        var fileNameFromPath = Path.GetFileNameWithoutExtension(video.FilePath);
+                        var normalizedFileNameFromPath = NormalizeName(fileNameFromPath);
+                        if (normalizedFileNameFromPath == normalizedItemName ||
+                            normalizedFileNameFromPath.Contains(normalizedItemName, StringComparison.OrdinalIgnoreCase) ||
+                            normalizedItemName.Contains(normalizedFileNameFromPath, StringComparison.OrdinalIgnoreCase))
+                        {
+                            if (AreNamesSimilar(normalizedItemName, normalizedFileNameFromPath))
+                            {
+                                playback.VideoAnalysisId = video.Id;
+                                _logger.LogDebug("Matched playback '{ItemName}' with video '{FilePath}' by name from path", 
+                                    playback.ItemName, video.FilePath);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Step 3: Try to match with LibraryPath by path
             var libraryPaths = await _dbContext.LibraryPaths
                 .Where(lp => lp.IsActive)
                 .ToListAsync();
@@ -355,6 +411,83 @@ namespace Optimarr.Controllers
             }
             
             return normalized.TrimEnd('/');
+        }
+
+        /// <summary>
+        /// Normalizes a name for comparison by removing common patterns (year, quality, etc.) and special characters
+        /// </summary>
+        private string NormalizeName(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return string.Empty;
+
+            // Remove common patterns: year in parentheses (1999), [1080p], [BluRay], etc.
+            var normalized = System.Text.RegularExpressions.Regex.Replace(name, @"\s*\((\d{4})\)", ""); // Remove (1999)
+            normalized = System.Text.RegularExpressions.Regex.Replace(normalized, @"\s*\[.*?\]", ""); // Remove [1080p], [BluRay], etc.
+            normalized = System.Text.RegularExpressions.Regex.Replace(normalized, @"\s*\{.*?\}", ""); // Remove {tags}
+            
+            // Remove file extensions if present
+            normalized = Path.GetFileNameWithoutExtension(normalized);
+            
+            // Normalize: lowercase, remove special characters, normalize whitespace
+            normalized = normalized.ToLowerInvariant()
+                .Replace("_", " ")
+                .Replace("-", " ")
+                .Replace(".", " ")
+                .Replace("'", "")
+                .Replace(":", "")
+                .Replace("&", "and");
+            
+            // Remove multiple spaces
+            normalized = System.Text.RegularExpressions.Regex.Replace(normalized, @"\s+", " ").Trim();
+            
+            return normalized;
+        }
+
+        /// <summary>
+        /// Checks if two normalized names are similar enough to be considered a match
+        /// </summary>
+        private bool AreNamesSimilar(string name1, string name2)
+        {
+            if (string.IsNullOrEmpty(name1) || string.IsNullOrEmpty(name2)) return false;
+            
+            // Exact match
+            if (name1 == name2) return true;
+            
+            // One contains the other (for cases like "The Matrix" vs "The Matrix 1999")
+            if (name1.Contains(name2, StringComparison.OrdinalIgnoreCase) || 
+                name2.Contains(name1, StringComparison.OrdinalIgnoreCase))
+            {
+                // Calculate similarity ratio - if one name is at least 70% of the other, consider it a match
+                var shorter = name1.Length < name2.Length ? name1 : name2;
+                var longer = name1.Length >= name2.Length ? name1 : name2;
+                
+                if (shorter.Length >= 3 && longer.Length > 0)
+                {
+                    var similarity = (double)shorter.Length / longer.Length;
+                    if (similarity >= 0.7)
+                    {
+                        return true;
+                    }
+                }
+            }
+            
+            // Check if they share significant words (at least 2 words in common for longer names)
+            var words1 = name1.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            var words2 = name2.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            
+            if (words1.Length >= 2 && words2.Length >= 2)
+            {
+                var commonWords = words1.Intersect(words2, StringComparer.OrdinalIgnoreCase).Count();
+                var totalWords = Math.Max(words1.Length, words2.Length);
+                
+                // If at least 50% of words match, consider it similar
+                if (commonWords >= 2 && (double)commonWords / totalWords >= 0.5)
+                {
+                    return true;
+                }
+            }
+            
+            return false;
         }
 
         [HttpGet("statistics")]
@@ -467,7 +600,14 @@ namespace Optimarr.Controllers
             [FromQuery] int pageSize = 50,
             [FromQuery] int? libraryPathId = null,
             [FromQuery] bool? isTranscode = null,
-            [FromQuery] string? deviceName = null)
+            [FromQuery] bool? isDirectPlay = null,
+            [FromQuery] bool? isDirectStream = null,
+            [FromQuery] string? deviceName = null,
+            [FromQuery] string? clientName = null,
+            [FromQuery] string? userName = null,
+            [FromQuery] string? search = null,
+            [FromQuery] string? sortBy = "playbackStartTime",
+            [FromQuery] string? sortOrder = "desc")
         {
             try
             {
@@ -483,16 +623,67 @@ namespace Optimarr.Controllers
                     query = query.Where(p => p.IsTranscode == isTranscode.Value);
                 }
 
+                if (isDirectPlay.HasValue)
+                {
+                    query = query.Where(p => p.IsDirectPlay == isDirectPlay.Value);
+                }
+
+                if (isDirectStream.HasValue)
+                {
+                    query = query.Where(p => p.IsDirectStream == isDirectStream.Value);
+                }
+
                 if (!string.IsNullOrEmpty(deviceName))
                 {
                     query = query.Where(p => p.DeviceName == deviceName);
                 }
 
+                if (!string.IsNullOrEmpty(clientName))
+                {
+                    query = query.Where(p => p.ClientName == clientName);
+                }
+
+                if (!string.IsNullOrEmpty(userName))
+                {
+                    query = query.Where(p => p.JellyfinUserName == userName);
+                }
+
+                if (!string.IsNullOrEmpty(search))
+                {
+                    query = query.Where(p => 
+                        p.ItemName.Contains(search) || 
+                        p.FilePath.Contains(search) ||
+                        (p.ClientName != null && p.ClientName.Contains(search)) ||
+                        (p.DeviceName != null && p.DeviceName.Contains(search)));
+                }
+
+                // Apply sorting
+                query = sortBy?.ToLower() switch
+                {
+                    "itemname" => sortOrder == "asc" 
+                        ? query.OrderBy(p => p.ItemName)
+                        : query.OrderByDescending(p => p.ItemName),
+                    "playmethod" => sortOrder == "asc"
+                        ? query.OrderBy(p => p.PlayMethod)
+                        : query.OrderByDescending(p => p.PlayMethod),
+                    "clientname" => sortOrder == "asc"
+                        ? query.OrderBy(p => p.ClientName)
+                        : query.OrderByDescending(p => p.ClientName),
+                    "devicename" => sortOrder == "asc"
+                        ? query.OrderBy(p => p.DeviceName)
+                        : query.OrderByDescending(p => p.DeviceName),
+                    "username" => sortOrder == "asc"
+                        ? query.OrderBy(p => p.JellyfinUserName)
+                        : query.OrderByDescending(p => p.JellyfinUserName),
+                    _ => sortOrder == "asc"
+                        ? query.OrderBy(p => p.PlaybackStartTime)
+                        : query.OrderByDescending(p => p.PlaybackStartTime)
+                };
+
                 var total = await query.CountAsync();
                 var items = await query
                     .Include(p => p.VideoAnalysis)
                     .Include(p => p.LibraryPath)
-                    .OrderByDescending(p => p.PlaybackStartTime)
                     .Skip((page - 1) * pageSize)
                     .Take(pageSize)
                     .Select(p => new
@@ -505,6 +696,7 @@ namespace Optimarr.Controllers
                         playbackDuration = p.PlaybackDuration,
                         clientName = p.ClientName,
                         deviceName = p.DeviceName,
+                        userName = p.JellyfinUserName,
                         playMethod = p.PlayMethod,
                         isDirectPlay = p.IsDirectPlay,
                         isDirectStream = p.IsDirectStream,
@@ -529,6 +721,61 @@ namespace Optimarr.Controllers
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error getting playback history");
+                return StatusCode(500, new { error = ex.Message });
+            }
+        }
+
+        [HttpPost("rematch")]
+        public async Task<ActionResult<object>> RematchPlaybackHistory()
+        {
+            try
+            {
+                _logger.LogInformation("Starting playback history re-matching");
+
+                var allPlaybacks = await _dbContext.PlaybackHistories
+                    .Where(p => p.VideoAnalysisId == null || p.LibraryPathId == null)
+                    .ToListAsync();
+
+                var matchedCount = 0;
+                var videoAnalysisMatches = 0;
+                var libraryPathMatches = 0;
+
+                foreach (var playback in allPlaybacks)
+                {
+                    var hadVideoAnalysis = playback.VideoAnalysisId != null;
+                    var hadLibraryPath = playback.LibraryPathId != null;
+
+                    await MatchPlaybackWithLibrary(playback);
+
+                    if (!hadVideoAnalysis && playback.VideoAnalysisId != null)
+                    {
+                        videoAnalysisMatches++;
+                        matchedCount++;
+                    }
+
+                    if (!hadLibraryPath && playback.LibraryPathId != null)
+                    {
+                        libraryPathMatches++;
+                        if (!hadVideoAnalysis) matchedCount++;
+                    }
+                }
+
+                await _dbContext.SaveChangesAsync();
+
+                _logger.LogInformation("Re-matched {MatchedCount} playback records ({VideoAnalysisMatches} with video analysis, {LibraryPathMatches} with library paths)", 
+                    matchedCount, videoAnalysisMatches, libraryPathMatches);
+
+                return Ok(new
+                {
+                    matched = matchedCount,
+                    videoAnalysisMatches = videoAnalysisMatches,
+                    libraryPathMatches = libraryPathMatches,
+                    total = allPlaybacks.Count
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error re-matching playback history");
                 return StatusCode(500, new { error = ex.Message });
             }
         }

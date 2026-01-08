@@ -41,6 +41,46 @@ namespace Optimarr.Services
             return _configuration?.GetValue<int>("CompatibilityRating:GoodCombinedThreshold") ?? 8;
         }
 
+        private List<string> GetEnabledClients()
+        {
+            var enabledClients = new List<string>();
+            var allClients = JellyfinCompatibilityData.AllClients;
+            
+            // Get disabled clients from configuration
+            var disabledClientsSection = _configuration?.GetSection("CompatibilityRating:DisabledClients");
+            var disabledClients = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            
+            if (disabledClientsSection != null && disabledClientsSection.Exists())
+            {
+                foreach (var client in allClients)
+                {
+                    var isDisabled = disabledClientsSection.GetValue<bool>(client);
+                    if (isDisabled)
+                    {
+                        disabledClients.Add(client);
+                    }
+                }
+            }
+            
+            // Return all clients except disabled ones
+            foreach (var client in allClients)
+            {
+                if (!disabledClients.Contains(client))
+                {
+                    enabledClients.Add(client);
+                }
+            }
+            
+            // Ensure at least one client is enabled
+            if (enabledClients.Count == 0)
+            {
+                _logger?.LogWarning("All clients are disabled, enabling all clients by default");
+                return allClients.ToList();
+            }
+            
+            return enabledClients;
+        }
+
         private Dictionary<string, CodecThresholds> LoadCodecThresholds()
         {
             // Return cached version if available (codec support doesn't change)
@@ -51,16 +91,23 @@ namespace Optimarr.Services
             
             var thresholds = new Dictionary<string, CodecThresholds>();
             
+            // Get enabled clients for threshold calculations
+            var enabledClients = GetEnabledClients();
+            
             // Calculate expected Direct Play clients for each codec based on JellyfinCompatibilityData
             foreach (var codecEntry in JellyfinCompatibilityData.VideoCodecSupport)
             {
                 var codecName = codecEntry.Key;
                 var support = codecEntry.Value;
                 
-                // Count clients with Supported level (can Direct Play)
-                var expectedDirectPlay = support.Values.Count(s => s == JellyfinCompatibilityData.SupportLevel.Supported);
-                var expectedRemux = support.Values.Count(s => s == JellyfinCompatibilityData.SupportLevel.Partial);
-                var totalClients = JellyfinCompatibilityData.AllClients.Length;
+                // Count enabled clients with Supported level (can Direct Play)
+                var expectedDirectPlay = enabledClients.Count(client => 
+                    support.ContainsKey(client) && 
+                    support[client] == JellyfinCompatibilityData.SupportLevel.Supported);
+                var expectedRemux = enabledClients.Count(client => 
+                    support.ContainsKey(client) && 
+                    support[client] == JellyfinCompatibilityData.SupportLevel.Partial);
+                var totalClients = enabledClients.Count;
                 
                 // Calculate thresholds based on expected support
                 // Optimal: 80% of expected Direct Play clients
@@ -109,6 +156,7 @@ namespace Optimarr.Services
             }
             
             // Fallback to global thresholds (read dynamically)
+            var enabledClients = GetEnabledClients();
             return new CodecThresholds
             {
                 OptimalDirectPlayThreshold = GetOptimalDirectPlayThreshold(),
@@ -116,7 +164,7 @@ namespace Optimarr.Services
                 GoodCombinedThreshold = GetGoodCombinedThreshold(),
                 ExpectedDirectPlay = 0,
                 ExpectedRemux = 0,
-                TotalClients = JellyfinCompatibilityData.AllClients.Length
+                TotalClients = enabledClients.Count
             };
         }
 
@@ -455,27 +503,38 @@ namespace Optimarr.Services
                         };
                     }
                     
-                    // Duration - mediainfo Duration field is always in milliseconds
-                    // Try multiple field names to find duration
-                    var durationStr = GetElementValue(generalTrack, "Duration", ns) 
-                        ?? GetElementValue(generalTrack, "Duration", null)
-                        ?? GetElementValue(generalTrack, "Duration_String3", ns)
+                    // Duration - try to get from Duration field (milliseconds) first, then Duration_String3 (formatted)
+                    var durationMsStr = GetElementValue(generalTrack, "Duration", ns) 
+                        ?? GetElementValue(generalTrack, "Duration", null);
+                    var durationFormattedStr = GetElementValue(generalTrack, "Duration_String3", ns)
                         ?? GetElementValue(generalTrack, "Duration_String3", null);
                     
-                    if (!string.IsNullOrEmpty(durationStr))
+                    if (!string.IsNullOrEmpty(durationMsStr))
                     {
-                        // mediainfo Duration is always in milliseconds
-                        // Remove any non-numeric characters except decimal point
-                        var cleanDuration = System.Text.RegularExpressions.Regex.Replace(durationStr, @"[^\d.]", "");
-                        if (!string.IsNullOrEmpty(cleanDuration) && double.TryParse(cleanDuration, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var durationMs))
+                        // Duration field is in milliseconds
+                        if (double.TryParse(durationMsStr, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var durationMs))
                         {
-                            // mediainfo Duration is always in milliseconds, convert to seconds
                             videoInfo.Duration = durationMs / 1000.0;
-                            _logger?.LogDebug("Extracted duration from General track: {DurationStr} -> {DurationMs} ms -> {Duration} seconds", durationStr, durationMs, videoInfo.Duration);
+                            _logger?.LogDebug("Extracted duration from General track Duration field: {DurationStr} -> {DurationMs} ms -> {Duration} seconds", durationMsStr, durationMs, videoInfo.Duration);
                         }
                         else
                         {
-                            _logger?.LogWarning("Could not parse duration string from General track: {DurationStr}", durationStr);
+                            _logger?.LogWarning("Could not parse Duration field as number: {DurationStr}", durationMsStr);
+                        }
+                    }
+                    
+                    // If duration is still 0 or invalid, try parsing Duration_String3 (formatted time)
+                    if (videoInfo.Duration <= 0 && !string.IsNullOrEmpty(durationFormattedStr))
+                    {
+                        var parsedDuration = ParseDurationString(durationFormattedStr);
+                        if (parsedDuration > 0)
+                        {
+                            videoInfo.Duration = parsedDuration;
+                            _logger?.LogDebug("Extracted duration from General track Duration_String3: {DurationStr} -> {Duration} seconds", durationFormattedStr, videoInfo.Duration);
+                        }
+                        else
+                        {
+                            _logger?.LogWarning("Could not parse Duration_String3: {DurationStr}", durationFormattedStr);
                         }
                     }
                     
@@ -488,16 +547,26 @@ namespace Optimarr.Services
                         if (videoTracksForDuration.Count > 0)
                         {
                             var videoTrack = videoTracksForDuration[0];
-                            durationStr = GetElementValue(videoTrack, "Duration", ns) 
+                            var videoDurationMsStr = GetElementValue(videoTrack, "Duration", ns) 
                                 ?? GetElementValue(videoTrack, "Duration", null);
-                            if (!string.IsNullOrEmpty(durationStr))
+                            var videoDurationFormattedStr = GetElementValue(videoTrack, "Duration_String3", ns)
+                                ?? GetElementValue(videoTrack, "Duration_String3", null);
+                            
+                            if (!string.IsNullOrEmpty(videoDurationMsStr))
                             {
-                                var cleanDuration = System.Text.RegularExpressions.Regex.Replace(durationStr, @"[^\d.]", "");
-                                if (!string.IsNullOrEmpty(cleanDuration) && double.TryParse(cleanDuration, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var durationMs))
+                                if (double.TryParse(videoDurationMsStr, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var durationMs))
                                 {
-                                    // mediainfo Duration is always in milliseconds, convert to seconds
                                     videoInfo.Duration = durationMs / 1000.0;
-                                    _logger?.LogDebug("Extracted duration from Video track: {DurationStr} -> {DurationMs} ms -> {Duration} seconds", durationStr, durationMs, videoInfo.Duration);
+                                    _logger?.LogDebug("Extracted duration from Video track Duration field: {DurationStr} -> {DurationMs} ms -> {Duration} seconds", videoDurationMsStr, durationMs, videoInfo.Duration);
+                                }
+                            }
+                            else if (!string.IsNullOrEmpty(videoDurationFormattedStr))
+                            {
+                                var parsedDuration = ParseDurationString(videoDurationFormattedStr);
+                                if (parsedDuration > 0)
+                                {
+                                    videoInfo.Duration = parsedDuration;
+                                    _logger?.LogDebug("Extracted duration from Video track Duration_String3: {DurationStr} -> {Duration} seconds", videoDurationFormattedStr, videoInfo.Duration);
                                 }
                             }
                         }
@@ -646,6 +715,75 @@ namespace Optimarr.Services
                 _logger?.LogError(ex, "Error extracting video information from: {FilePath}", filePath);
                 throw;
             }
+        }
+
+        private double ParseDurationString(string durationStr)
+        {
+            if (string.IsNullOrWhiteSpace(durationStr))
+                return 0;
+
+            // Try parsing as pure number (milliseconds)
+            if (double.TryParse(durationStr, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var durationMs))
+            {
+                // If the number is very large (> 86400000 = 24 hours in ms), assume it's milliseconds
+                // If it's smaller, it might already be in seconds
+                if (durationMs > 86400000)
+                {
+                    return durationMs / 1000.0; // Convert milliseconds to seconds
+                }
+                else if (durationMs > 86400)
+                {
+                    // Likely already in seconds
+                    return durationMs;
+                }
+                else
+                {
+                    // Very small number, might be in hours or minutes, but more likely seconds
+                    return durationMs;
+                }
+            }
+
+            // Try parsing as time format HH:MM:SS or HH:MM:SS.mmm
+            var timeMatch = System.Text.RegularExpressions.Regex.Match(durationStr, @"(\d+):(\d+):(\d+)(?:\.(\d+))?");
+            if (timeMatch.Success)
+            {
+                var hours = int.Parse(timeMatch.Groups[1].Value);
+                var minutes = int.Parse(timeMatch.Groups[2].Value);
+                var seconds = int.Parse(timeMatch.Groups[3].Value);
+                var milliseconds = timeMatch.Groups[4].Success ? int.Parse(timeMatch.Groups[4].Value) : 0;
+                
+                var totalSeconds = hours * 3600.0 + minutes * 60.0 + seconds + milliseconds / 1000.0;
+                return totalSeconds;
+            }
+
+            // Try parsing as formatted string like "1h 23min 45s" or "1h 23min 45.123s"
+            var formattedMatch = System.Text.RegularExpressions.Regex.Match(durationStr, 
+                @"(?:(\d+)\s*h(?:ours?)?)?\s*(?:(\d+)\s*min(?:utes?)?)?\s*(?:(\d+(?:\.\d+)?)\s*s(?:econds?)?)?", 
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            if (formattedMatch.Success)
+            {
+                var hours = formattedMatch.Groups[1].Success ? int.Parse(formattedMatch.Groups[1].Value) : 0;
+                var minutes = formattedMatch.Groups[2].Success ? int.Parse(formattedMatch.Groups[2].Value) : 0;
+                var seconds = formattedMatch.Groups[3].Success ? double.Parse(formattedMatch.Groups[3].Value, System.Globalization.CultureInfo.InvariantCulture) : 0;
+                
+                var totalSeconds = hours * 3600.0 + minutes * 60.0 + seconds;
+                return totalSeconds;
+            }
+
+            // Try extracting just numbers and assume milliseconds if large enough
+            var numbersOnly = System.Text.RegularExpressions.Regex.Replace(durationStr, @"[^\d.]", "");
+            if (!string.IsNullOrEmpty(numbersOnly) && double.TryParse(numbersOnly, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var numValue))
+            {
+                // If the number is very large, assume milliseconds
+                if (numValue > 86400000)
+                {
+                    return numValue / 1000.0;
+                }
+                // Otherwise assume seconds
+                return numValue;
+            }
+
+            return 0;
         }
 
         private string GetElementValue(XElement element, string name, XNamespace? ns = null)
@@ -1108,8 +1246,11 @@ namespace Optimarr.Services
                 videoCodecKey = videoInfo.VideoCodec;
             }
 
-            // Analyze each client
-            foreach (var client in JellyfinCompatibilityData.AllClients)
+            // Get enabled clients (filter out disabled ones)
+            var enabledClients = GetEnabledClients();
+            
+            // Analyze each enabled client
+            foreach (var client in enabledClients)
             {
                 var clientResult = new ClientCompatibility();
                 var issues = new List<string>();

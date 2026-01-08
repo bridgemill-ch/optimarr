@@ -174,6 +174,26 @@ export async function loadRecentScans() {
     }
 }
 
+export async function reconnectToRunningScans() {
+    try {
+        const response = await fetch('/api/library/scans');
+        if (!response.ok) return;
+        
+        const scans = await response.json();
+        const runningScans = scans.filter(scan => 
+            scan.status === 'Running' || scan.status === 'Pending'
+        );
+        
+        if (runningScans.length > 0) {
+            const latestRunningScan = runningScans[0];
+            console.log(`Reconnecting to running scan: ${latestRunningScan.id}`);
+            startScanPolling(latestRunningScan.id);
+        }
+    } catch (error) {
+        console.error('Error checking for running scans:', error);
+    }
+}
+
 export async function startScanPolling(scanId) {
     const progressDiv = document.getElementById('scanProgress');
     if (!progressDiv) return;

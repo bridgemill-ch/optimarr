@@ -1,13 +1,14 @@
 // Main Application Entry Point
 import { initNavigation } from './navigation.js';
 import { loadDashboard } from './dashboard.js';
-import { loadKnownLibraries, loadRecentScans, startScanPolling } from './library.js';
+import { loadKnownLibraries, loadRecentScans, startScanPolling, reconnectToRunningScans } from './library.js';
 import { loadBrowseFilterOptions, loadBrowseMedia, setupBrowseEventListeners } from './browse.js';
-import { loadRatingSettings, loadCompatibilitySettings, saveSettings, loadJellyfinSettings } from './settings.js';
+import { loadRatingSettings, loadCompatibilitySettings, saveSettings, loadJellyfinSettings, loadSonarrSettings, loadRadarrSettings, loadSonarrPathMappings, loadRadarrPathMappings } from './settings.js';
 import { loadServarrStatus } from './servarr.js';
 import { showAddLibraryModal, closeAddLibraryModal } from './library-modals.js';
 import { closeMediaModal, closeClientCompatibilityModal, closeTrackDetailsModal } from './media-info.js';
 import { closePathBrowser as closePathBrowserModal } from './path-browser.js';
+import { checkMigrationStatus } from './migration.js';
 
 // Rating Info Box Functions
 function closeRatingInfoBox() {
@@ -94,13 +95,16 @@ async function handleReboot() {
 
 // Initialize application when DOM is ready
 document.addEventListener('DOMContentLoaded', function() {
+    // Load app version
+    loadAppVersion();
+    
     // Initialize navigation
     initNavigation();
     
-    // Settings form
-    const settingsForm = document.getElementById('settingsForm');
-    if (settingsForm) {
-        settingsForm.addEventListener('submit', async function(e) {
+    // Rating settings form
+    const ratingSettingsForm = document.getElementById('ratingSettingsForm');
+    if (ratingSettingsForm) {
+        ratingSettingsForm.addEventListener('submit', async function(e) {
             e.preventDefault();
             await saveSettings();
         });
@@ -119,8 +123,17 @@ document.addEventListener('DOMContentLoaded', function() {
     // Load Jellyfin settings on page load
     loadJellyfinSettings();
     
+    // Load Sonarr and Radarr settings on page load
+    loadSonarrSettings();
+    loadRadarrSettings();
+    loadSonarrPathMappings();
+    loadRadarrPathMappings();
+    
     // Load library scans
     loadRecentScans();
+    
+    // Reconnect to any running scans (survives page reload)
+    reconnectToRunningScans();
     
     // Check if browse tab is active and load media
     const activeTab = document.querySelector('.nav-item.active');
@@ -131,6 +144,9 @@ document.addEventListener('DOMContentLoaded', function() {
     
     // Check if rating info box should be hidden
     checkRatingInfoBoxState();
+    
+    // Check migration status on startup
+    checkMigrationStatus();
     
     // Add Library Form Handler
     const addLibraryForm = document.getElementById('addLibraryForm');
@@ -192,5 +208,5 @@ document.addEventListener('DOMContentLoaded', function() {
 
 // Export to window for global access
 window.closeRatingInfoBox = closeRatingInfoBox;
-window.handleReboot = handleReboot;
+// Removed handleReboot export - reboot button removed from UI
 

@@ -1,8 +1,10 @@
 // Navigation and Tab Management
 import { loadKnownLibraries } from './library.js';
 import { loadBrowseFilterOptions, loadBrowseMedia, setupBrowseEventListeners } from './browse.js';
-import { loadRatingSettings, loadCompatibilitySettings } from './settings.js';
+import { loadPlaybackHistory, loadPlaybackFilterOptions, setupPlaybackEventListeners, loadPlaybackDashboard } from './playback.js';
+import { loadRatingSettings, loadCompatibilitySettings, loadClientSettings, loadJellyfinSettings, loadSonarrSettings, loadRadarrSettings, loadSonarrPathMappings, loadRadarrPathMappings } from './settings.js';
 import { loadDashboard } from './dashboard.js';
+import { loadServarrStatus } from './servarr.js';
 
 let switchTabFunction = null;
 
@@ -77,9 +79,22 @@ export function initNavigation() {
                 loadBrowseMedia();
                 // Setup event listeners for auto-search and sort changes
                 setupBrowseEventListeners();
+            } else if (targetTab === 'playback') {
+                // Load playback dashboard and history
+                loadPlaybackDashboard();
+                loadPlaybackFilterOptions();
+                loadPlaybackHistory();
+                setupPlaybackEventListeners();
             } else if (targetTab === 'settings') {
                 loadRatingSettings();
+                loadClientSettings();
                 loadCompatibilitySettings();
+                loadJellyfinSettings();
+                loadSonarrSettings();
+                loadRadarrSettings();
+                loadSonarrPathMappings();
+                loadRadarrPathMappings();
+                loadServarrStatus();
             }
         } else {
             console.error('Target section not found:', targetTab);

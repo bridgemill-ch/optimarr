@@ -29,6 +29,7 @@
                 <div class="brand-text">
                     <h1>Optimarr</h1>
                     <span class="subtitle">Media Optimization</span>
+                    <span class="version-text" id="appVersion">v1.1.0</span>
                 </div>
             </div>
             <nav class="sidebar-nav">
@@ -44,22 +45,28 @@
                     <span class="nav-icon">📁</span>
                     <span class="nav-text">Library</span>
                 </a>
+                <a href="#playback" class="nav-item" data-tab="playback">
+                    <span class="nav-icon">▶️</span>
+                    <span class="nav-text">Playback</span>
+                </a>
                 <a href="#settings" class="nav-item" data-tab="settings">
                     <span class="nav-icon">⚙️</span>
                     <span class="nav-text">Settings</span>
                 </a>
             </nav>
-            <div class="sidebar-footer">
-                <div class="sidebar-version">
-                    <span class="version-label">Version</span>
-                    <span class="version-number" id="appVersion">Loading...</span>
-                </div>
-                <button class="btn btn-secondary btn-reboot" id="rebootButton" onclick="handleReboot()">
-                    <span class="nav-icon">🔄</span>
-                    <span>Reboot</span>
-                </button>
-            </div>
         </aside>
+
+        <!-- Database Migration Banner -->
+        <div id="migrationBanner" class="migration-banner" style="display: none;">
+            <div class="migration-banner-content">
+                <div class="migration-banner-icon">🔄</div>
+                <div class="migration-banner-text">
+                    <div class="migration-banner-title">Database Migration in Progress</div>
+                    <div class="migration-banner-message" id="migrationMessage">Checking database schema...</div>
+                    <div class="migration-banner-details" id="migrationDetails" style="display: none;"></div>
+                </div>
+            </div>
+        </div>
 
         <!-- Main Content Area -->
         <main class="main-content">
@@ -196,6 +203,22 @@
                     <h2>Browse Media</h2>
                 </div>
 
+                <div class="browse-selection-toolbar" style="display: none; margin-bottom: 1rem; padding: 0.75rem; background-color: var(--bg-tertiary); border-radius: 4px; border: 1px solid var(--border-color);">
+                    <div style="display: flex; gap: 1rem; align-items: center; flex-wrap: wrap;">
+                        <label class="checkbox-label" style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+                            <input type="checkbox" id="selectAllBrowse" onchange="toggleSelectAllBrowse()">
+                            <span>Select All</span>
+                        </label>
+                        <span id="selectedCount" style="color: var(--text-secondary); font-size: 0.875rem;">0 selected</span>
+                        <button type="button" class="btn btn-primary" onclick="redownloadSelected()" id="redownloadSelectedBtn" disabled>
+                            Redownload Selected
+                        </button>
+                        <button type="button" class="btn btn-secondary" onclick="clearBrowseSelection()">
+                            Clear Selection
+                        </button>
+                    </div>
+                </div>
+
                 <div class="content-box">
                     <div class="box-header">
                         <div class="browse-controls">
@@ -217,9 +240,14 @@
                                         <option value="Good">Good</option>
                                         <option value="Poor">Poor</option>
                                     </select>
+                                    <select id="browseServarrFilter" class="form-control">
+                                        <option value="">All Media</option>
+                                        <option value="synced">Synced with Sonarr/Radarr</option>
+                                        <option value="not-synced">Not Synced</option>
+                                    </select>
                                     <input type="text" id="browseSearch" class="form-control" placeholder="Search filename, path, codec, container..." onkeypress="if(event.key==='Enter') loadBrowseMedia()">
                                     <label class="checkbox-label" style="display: flex; align-items: center; gap: 0.5rem; white-space: nowrap;">
-                                        <input type="checkbox" id="browseBrokenFilter" onchange="loadBrowseMedia()">
+                                        <input type="checkbox" id="browseBrokenFilter">
                                         <span>Broken Only</span>
                                     </label>
                                     <button class="btn btn-secondary" onclick="loadBrowseMedia()">Filter</button>
@@ -249,6 +277,70 @@
                             <div class="loading-placeholder">Loading media...</div>
                         </div>
                         <div id="browsePagination" class="pagination"></div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Playback Tab -->
+            <section id="playback" class="content-section">
+                <div class="page-header">
+                    <h2>Playback History</h2>
+                </div>
+
+                <div id="playbackDashboard"></div>
+
+                <div class="content-box">
+                    <div class="box-header">
+                        <div class="browse-controls">
+                            <div class="browse-filters">
+                                <div class="control-section-label">Filters</div>
+                                <div class="browse-toolbar">
+                                    <select id="playbackLibraryFilter" class="form-control">
+                                        <option value="">All Libraries</option>
+                                    </select>
+                                    <select id="playbackMethodFilter" class="form-control">
+                                        <option value="">All Methods</option>
+                                        <option value="directplay">Direct Play</option>
+                                        <option value="directstream">Direct Stream</option>
+                                        <option value="transcode">Transcode</option>
+                                    </select>
+                                    <select id="playbackDeviceFilter" class="form-control">
+                                        <option value="">All Devices</option>
+                                    </select>
+                                    <select id="playbackClientFilter" class="form-control">
+                                        <option value="">All Clients</option>
+                                    </select>
+                                    <select id="playbackUserFilter" class="form-control">
+                                        <option value="">All Users</option>
+                                    </select>
+                                    <input type="text" id="playbackSearch" class="form-control" placeholder="Search item name, path, client, device..." onkeypress="if(event.key==='Enter') loadPlaybackHistory()">
+                                    <button class="btn btn-secondary" onclick="loadPlaybackHistory()">Filter</button>
+                                </div>
+                            </div>
+                            <div class="browse-sort">
+                                <div class="control-section-label">Sort</div>
+                                <div class="browse-toolbar">
+                                    <select id="playbackSortBy" class="form-control">
+                                        <option value="playbackStartTime">Date</option>
+                                        <option value="itemName">Item Name</option>
+                                        <option value="playMethod">Play Method</option>
+                                        <option value="clientName">Client</option>
+                                        <option value="deviceName">Device</option>
+                                        <option value="username">User</option>
+                                    </select>
+                                    <select id="playbackSortOrder" class="form-control">
+                                        <option value="desc">Descending</option>
+                                        <option value="asc">Ascending</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="box-content">
+                        <div id="playbackHistoryGrid" class="playback-list">
+                            <div class="loading-placeholder">Loading playback history...</div>
+                        </div>
+                        <div id="playbackPagination" class="pagination"></div>
                     </div>
                 </div>
             </section>
@@ -322,12 +414,16 @@
 
                 <div class="content-box">
                     <div class="box-header">
-                        <h3>Configuration</h3>
+                        <h3>Service Integrations</h3>
                     </div>
                     <div class="box-content">
                         <form id="settingsForm" class="form">
+                            <!-- Jellyfin Section -->
                             <div class="settings-section">
-                                <h4>Jellyfin</h4>
+                                <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 1rem; flex-wrap: wrap; gap: 0.5rem;">
+                                    <h4 style="margin: 0;">Jellyfin</h4>
+                                    <span id="jellyfinStatus" class="status-badge disabled" style="font-size: 0.75rem;">Loading...</span>
+                                </div>
                                 <div class="info-box" style="margin-bottom: 1rem; padding: 0.75rem; background-color: var(--bg-secondary); border-radius: 4px; border-left: 3px solid var(--primary-color);">
                                     <p style="margin: 0; font-size: 0.875rem; color: var(--text-secondary);">
                                         Configure Jellyfin connection to sync playback history and match with your local libraries. You can use either an API Key or Username/Password for authentication.
@@ -358,27 +454,191 @@
                                     </label>
                                 </div>
                                 <div class="form-group">
-                                    <button type="button" class="btn btn-secondary" onclick="testJellyfinConnection()">
-                                        <span id="jellyfinTestStatus"></span> Test Connection
-                                    </button>
+                                    <div style="display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: center;">
+                                        <button type="button" class="btn btn-secondary" onclick="testJellyfinConnection(event)">
+                                            <span id="jellyfinTestStatus"></span> Test Connection
+                                        </button>
+                                        <button type="button" class="btn btn-primary" onclick="saveJellyfinSettings()">
+                                            Save Settings
+                                        </button>
+                                    </div>
                                 </div>
-                                <div class="form-group">
-                                    <label for="syncDays">Sync Playback History (Days)</label>
-                                    <input type="number" id="syncDays" class="form-control" value="30" min="1" max="365" style="max-width: 150px;">
-                                    <small class="form-help">Number of days of playback history to import from Jellyfin</small>
-                                </div>
-                                <div class="form-group">
-                                    <button type="button" class="btn btn-primary" onclick="syncJellyfinPlayback()">
-                                        <span id="jellyfinSyncStatus"></span> Sync Playback History
-                                    </button>
-                                </div>
-                                <div class="form-group">
-                                    <button type="button" class="btn btn-primary" onclick="saveJellyfinSettings()">
-                                        Save Jellyfin Settings
-                                    </button>
+                                <div class="form-group" style="border-top: 1px solid var(--border-color); padding-top: 1rem; margin-top: 1rem;">
+                                    <label style="font-weight: 600; margin-bottom: 0.5rem; display: block;">Sync Options</label>
+                                    <div style="display: flex; gap: 0.75rem; align-items: flex-start; flex-wrap: wrap;">
+                                        <label class="checkbox-label" style="display: flex; align-items: center; gap: 0.5rem; white-space: nowrap;">
+                                            <input type="checkbox" id="syncAllHistory" onchange="toggleSyncDaysInput()">
+                                            <span>Sync All Historical Data</span>
+                                        </label>
+                                        <div style="display: flex; gap: 0.5rem; align-items: center; flex: 1; min-width: 200px;">
+                                            <input type="number" id="syncDays" class="form-control" value="30" min="1" max="365" style="max-width: 100px;">
+                                            <span style="color: var(--text-secondary); font-size: 0.875rem;">days</span>
+                                        </div>
+                                    </div>
+                                    <small class="form-help" style="margin-top: 0.5rem; display: block;">
+                                        <span id="syncHelpText">Import playback history from the last 30 days. Check "Sync All" to import complete history.</span>
+                                    </small>
+                                    <div style="margin-top: 0.75rem; display: flex; gap: 0.75rem; flex-wrap: wrap;">
+                                        <button type="button" class="btn btn-primary btn-sm" onclick="syncJellyfinPlayback(event)">
+                                            <span id="jellyfinSyncStatus"></span> Sync Playback History
+                                        </button>
+                                        <button type="button" class="btn btn-secondary btn-sm" onclick="rematchPlaybackHistory(event)" title="Re-match existing playback history with libraries (useful if libraries were added after sync)">
+                                            Re-match with Libraries
+                                        </button>
+                                    </div>
                                 </div>
                             </div>
 
+                            <!-- Sonarr Section -->
+                            <div class="settings-section">
+                                <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 1rem; flex-wrap: wrap; gap: 0.5rem;">
+                                    <h4 style="margin: 0;">Sonarr</h4>
+                                    <span id="sonarrStatusText" class="status-badge disabled" style="font-size: 0.75rem;">Loading...</span>
+                                </div>
+                                <div class="info-box" style="margin-bottom: 1rem; padding: 0.75rem; background-color: var(--bg-secondary); border-radius: 4px; border-left: 3px solid var(--primary-color);">
+                                    <p style="margin: 0; font-size: 0.875rem; color: var(--text-secondary);">
+                                        Configure Sonarr connection to sync TV show libraries and automatically discover series. Get your API key from Settings → General → Security → API Key.
+                                    </p>
+                                </div>
+                                <div class="form-group">
+                                    <label for="sonarrUrl">Base URL</label>
+                                    <input type="text" id="sonarrUrl" class="form-control" placeholder="http://localhost:8989">
+                                </div>
+                                <div class="form-group">
+                                    <label for="sonarrApiKey">API Key</label>
+                                    <input type="password" id="sonarrApiKey" class="form-control" placeholder="Your Sonarr API Key">
+                                    <small class="form-help">Get this from: Settings → General → Security → API Key</small>
+                                </div>
+                                <div class="form-group">
+                                    <label class="checkbox-label">
+                                        <input type="checkbox" id="sonarrEnabled">
+                                        <span>Enabled</span>
+                                    </label>
+                                </div>
+                                <div class="form-group">
+                                    <div style="display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: center;">
+                                        <button type="button" class="btn btn-secondary" onclick="testSonarrConnection(event)">
+                                            <span id="sonarrTestStatus"></span> Test Connection
+                                        </button>
+                                        <button type="button" class="btn btn-primary" onclick="saveSonarrSettings()">
+                                            Save Settings
+                                        </button>
+                                    </div>
+                                </div>
+                                <div class="form-group" style="border-top: 1px solid var(--border-color); padding-top: 1rem; margin-top: 1rem;">
+                                    <label style="font-weight: 600; margin-bottom: 0.5rem; display: block;">Path Mappings</label>
+                                    <div class="info-box" style="margin-bottom: 0.75rem; padding: 0.75rem; background-color: var(--bg-secondary); border-radius: 4px; border-left: 3px solid var(--primary-color);">
+                                        <p style="margin: 0; font-size: 0.875rem; color: var(--text-secondary);">
+                                            Map paths from Sonarr to Optimarr. Required if Sonarr and Optimarr run in different Docker containers or see different paths. Example: Sonarr sees <code>/data/tv</code> but Optimarr needs <code>/mnt/media/tv</code>.
+                                        </p>
+                                    </div>
+                                    <div id="sonarrPathMappingsContainer">
+                                        <div class="loading-placeholder">Loading path mappings...</div>
+                                    </div>
+                                    <div style="margin-top: 0.75rem; display: flex; gap: 0.75rem; flex-wrap: wrap;">
+                                        <button type="button" class="btn btn-secondary btn-sm" onclick="addSonarrPathMapping()">+ Add Mapping</button>
+                                        <button type="button" class="btn btn-primary btn-sm" onclick="saveSonarrPathMappings()">Save Mappings</button>
+                                    </div>
+                                </div>
+                                <div class="form-group" style="border-top: 1px solid var(--border-color); padding-top: 1rem; margin-top: 1rem;">
+                                    <label style="font-weight: 600; margin-bottom: 0.5rem; display: block;">Library Sync</label>
+                                    <div class="info-box" style="margin-bottom: 0.75rem; padding: 0.75rem; background-color: var(--bg-secondary); border-radius: 4px; border-left: 3px solid var(--primary-color);">
+                                        <p style="margin: 0; font-size: 0.875rem; color: var(--text-secondary);">
+                                            Sync Sonarr root folders and series to Optimarr's internal library. This will automatically discover and add TV show libraries from Sonarr.
+                                        </p>
+                                    </div>
+                                    <div style="margin-top: 0.75rem; display: flex; gap: 0.75rem; flex-wrap: wrap;">
+                                        <button type="button" class="btn btn-primary btn-sm" onclick="syncSonarrLibrary()">
+                                            <span id="sonarrSyncStatus"></span> Sync Sonarr Library
+                                        </button>
+                                        <button type="button" class="btn btn-secondary btn-sm" onclick="matchVideosWithServarr()" title="Match existing videos in Optimarr with Sonarr series">
+                                            <span id="matchVideosStatusSonarr"></span> Match Videos
+                                        </button>
+                                    </div>
+                                    <div id="sonarrSyncResult" style="margin-top: 0.75rem; display: none;"></div>
+                                </div>
+                            </div>
+
+                            <!-- Radarr Section -->
+                            <div class="settings-section">
+                                <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 1rem; flex-wrap: wrap; gap: 0.5rem;">
+                                    <h4 style="margin: 0;">Radarr</h4>
+                                    <span id="radarrStatusText" class="status-badge disabled" style="font-size: 0.75rem;">Loading...</span>
+                                </div>
+                                <div class="info-box" style="margin-bottom: 1rem; padding: 0.75rem; background-color: var(--bg-secondary); border-radius: 4px; border-left: 3px solid var(--primary-color);">
+                                    <p style="margin: 0; font-size: 0.875rem; color: var(--text-secondary);">
+                                        Configure Radarr connection to sync movie libraries and automatically discover movies. Get your API key from Settings → General → Security → API Key.
+                                    </p>
+                                </div>
+                                <div class="form-group">
+                                    <label for="radarrUrl">Base URL</label>
+                                    <input type="text" id="radarrUrl" class="form-control" placeholder="http://localhost:7878">
+                                </div>
+                                <div class="form-group">
+                                    <label for="radarrApiKey">API Key</label>
+                                    <input type="password" id="radarrApiKey" class="form-control" placeholder="Your Radarr API Key">
+                                    <small class="form-help">Get this from: Settings → General → Security → API Key</small>
+                                </div>
+                                <div class="form-group">
+                                    <label class="checkbox-label">
+                                        <input type="checkbox" id="radarrEnabled">
+                                        <span>Enabled</span>
+                                    </label>
+                                </div>
+                                <div class="form-group">
+                                    <div style="display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: center;">
+                                        <button type="button" class="btn btn-secondary" onclick="testRadarrConnection(event)">
+                                            <span id="radarrTestStatus"></span> Test Connection
+                                        </button>
+                                        <button type="button" class="btn btn-primary" onclick="saveRadarrSettings()">
+                                            Save Settings
+                                        </button>
+                                    </div>
+                                </div>
+                                <div class="form-group" style="border-top: 1px solid var(--border-color); padding-top: 1rem; margin-top: 1rem;">
+                                    <label style="font-weight: 600; margin-bottom: 0.5rem; display: block;">Path Mappings</label>
+                                    <div class="info-box" style="margin-bottom: 0.75rem; padding: 0.75rem; background-color: var(--bg-secondary); border-radius: 4px; border-left: 3px solid var(--primary-color);">
+                                        <p style="margin: 0; font-size: 0.875rem; color: var(--text-secondary);">
+                                            Map paths from Radarr to Optimarr. Required if Radarr and Optimarr run in different Docker containers or see different paths. Example: Radarr sees <code>/data/movies</code> but Optimarr needs <code>/mnt/media/movies</code>.
+                                        </p>
+                                    </div>
+                                    <div id="radarrPathMappingsContainer">
+                                        <div class="loading-placeholder">Loading path mappings...</div>
+                                    </div>
+                                    <div style="margin-top: 0.75rem; display: flex; gap: 0.75rem; flex-wrap: wrap;">
+                                        <button type="button" class="btn btn-secondary btn-sm" onclick="addRadarrPathMapping()">+ Add Mapping</button>
+                                        <button type="button" class="btn btn-primary btn-sm" onclick="saveRadarrPathMappings()">Save Mappings</button>
+                                    </div>
+                                </div>
+                                <div class="form-group" style="border-top: 1px solid var(--border-color); padding-top: 1rem; margin-top: 1rem;">
+                                    <label style="font-weight: 600; margin-bottom: 0.5rem; display: block;">Library Sync</label>
+                                    <div class="info-box" style="margin-bottom: 0.75rem; padding: 0.75rem; background-color: var(--bg-secondary); border-radius: 4px; border-left: 3px solid var(--primary-color);">
+                                        <p style="margin: 0; font-size: 0.875rem; color: var(--text-secondary);">
+                                            Sync Radarr root folders and movies to Optimarr's internal library. This will automatically discover and add movie libraries from Radarr.
+                                        </p>
+                                    </div>
+                                    <div style="margin-top: 0.75rem; display: flex; gap: 0.75rem; flex-wrap: wrap;">
+                                        <button type="button" class="btn btn-primary btn-sm" onclick="syncRadarrLibrary()">
+                                            <span id="radarrSyncStatus"></span> Sync Radarr Library
+                                        </button>
+                                        <button type="button" class="btn btn-secondary btn-sm" onclick="matchVideosWithServarr()" title="Match existing videos in Optimarr with Radarr movies">
+                                            <span id="matchVideosStatusRadarr"></span> Match Videos
+                                        </button>
+                                    </div>
+                                    <div id="radarrSyncResult" style="margin-top: 0.75rem; display: none;"></div>
+                                </div>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+
+                <!-- Rating Thresholds Section -->
+                <div class="content-box" style="margin-top: 1.5rem;">
+                    <div class="box-header">
+                        <h3>Rating Thresholds</h3>
+                    </div>
+                    <div class="box-content">
+                        <form id="ratingSettingsForm" class="form">
                             <div class="settings-section">
                                 <h4 style="margin-top: 0; margin-bottom: 1rem;">Global Rating Thresholds</h4>
                                 <div class="info-box" style="margin-bottom: 1.5rem; padding: 1rem; background-color: var(--bg-secondary); border-radius: 4px; border-left: 3px solid var(--primary-color);">
@@ -404,24 +664,52 @@
                                     <input type="number" id="goodCombinedThreshold" class="form-control" min="1" max="20" step="1">
                                     <small class="form-help">Minimum combined Direct Play + Remux clients for "Good" rating</small>
                                 </div>
-                            </div>
-
-                            <div class="form-actions">
-                                <button type="submit" class="btn btn-primary">Save Settings</button>
-                            </div>
-
-                            <div class="settings-section">
-                                <h4>Client Compatibility Overrides</h4>
-                                <div class="info-box" style="margin-bottom: 1.5rem; padding: 1rem; background-color: var(--bg-secondary); border-radius: 4px; border-left: 3px solid var(--primary-color);">
-                                    <p style="margin: 0; font-size: 0.875rem; color: var(--text-secondary);">
-                                        Override default compatibility settings for specific codecs and clients. Changes will apply to newly analyzed videos. Use this to customize compatibility based on your specific client devices and versions.
-                                    </p>
-                                </div>
-                                <div id="compatibilitySettingsContainer">
-                                    <div class="loading-placeholder">Loading compatibility settings...</div>
+                                <div class="form-actions">
+                                    <button type="submit" class="btn btn-primary">Save Rating Settings</button>
                                 </div>
                             </div>
                         </form>
+                    </div>
+                </div>
+
+                <!-- Jellyfin Clients Section -->
+                <div class="content-box" style="margin-top: 1.5rem;">
+                    <div class="box-header">
+                        <h3>Jellyfin Clients</h3>
+                    </div>
+                    <div class="box-content">
+                        <div class="settings-section">
+                            <div class="info-box" style="margin-bottom: 1rem; padding: 0.75rem; background-color: var(--bg-secondary); border-radius: 4px; border-left: 3px solid var(--primary-color);">
+                                <p style="margin: 0; font-size: 0.875rem; color: var(--text-secondary);">
+                                    Enable or disable Jellyfin clients for compatibility calculations. Disabled clients will not be included in the compatibility rating (0-11 scale) or Client Compatibility Overrides. This allows you to focus on the clients you actually use.
+                                </p>
+                            </div>
+                            <div id="clientSettingsContainer">
+                                <div class="loading-placeholder">Loading client settings...</div>
+                            </div>
+                            <div style="margin-top: 1rem;">
+                                <button type="button" class="btn btn-primary" onclick="saveClientSettings()">Save Client Settings</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Compatibility Overrides Section -->
+                <div class="content-box" style="margin-top: 1.5rem;">
+                    <div class="box-header">
+                        <h3>Client Compatibility Overrides</h3>
+                    </div>
+                    <div class="box-content">
+                        <div class="settings-section">
+                            <div class="info-box" style="margin-bottom: 1.5rem; padding: 1rem; background-color: var(--bg-secondary); border-radius: 4px; border-left: 3px solid var(--primary-color);">
+                                <p style="margin: 0; font-size: 0.875rem; color: var(--text-secondary);">
+                                    Override default compatibility settings for specific codecs and clients. Changes will apply to newly analyzed videos. Use this to customize compatibility based on your specific client devices and versions.
+                                </p>
+                            </div>
+                            <div id="compatibilitySettingsContainer">
+                                <div class="loading-placeholder">Loading compatibility settings...</div>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </section>
@@ -532,5 +820,23 @@
     </div>
 
     <script type="module" src="js/app.js"></script>
+    <!-- Suppress ASP.NET Core browser refresh WebSocket errors in console -->
+    <script>
+        // Suppress WebSocket connection errors from ASP.NET Core browser refresh
+        window.addEventListener('error', function(e) {
+            if (e.message && e.message.includes('WebSocket') && e.message.includes('aspnetcore-browser-refresh')) {
+                e.preventDefault();
+                return false;
+            }
+        }, true);
+        
+        // Also catch unhandled promise rejections from WebSocket
+        window.addEventListener('unhandledrejection', function(e) {
+            if (e.reason && typeof e.reason === 'string' && e.reason.includes('WebSocket') && e.reason.includes('aspnetcore-browser-refresh')) {
+                e.preventDefault();
+                return false;
+            }
+        });
+    </script>
 </body>
 </html>

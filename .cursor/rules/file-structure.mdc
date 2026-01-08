@@ -1,0 +1,66 @@
+---
+type: Apply Intelligently
+description: Project file structure and organization for Optimarr codebase
+---
+
+# File Structure
+
+```
+Optimarr/
+├── Controllers/          # API Controllers
+│   ├── AnalysisController.cs
+│   ├── LibraryController.cs
+│   ├── PlaybackController.cs
+│   ├── ServarrController.cs
+│   └── SystemController.cs
+├── Services/            # Business Logic Services
+│   ├── VideoAnalyzerService.cs
+│   ├── LibraryScannerService.cs
+│   ├── SonarrService.cs
+│   ├── RadarrService.cs
+│   ├── ServarrSyncService.cs
+│   ├── VideoServarrMatcherService.cs
+│   ├── VideoMatchingProgressService.cs
+│   ├── JellyfinService.cs
+│   ├── PlaybackSyncService.cs
+│   └── DatabaseMigrationService.cs
+├── Models/              # Data Models
+│   ├── VideoAnalysis.cs
+│   ├── LibraryScan.cs
+│   ├── LibraryPath.cs
+│   ├── PlaybackHistory.cs
+│   └── ...
+├── Data/                # Data Access
+│   ├── AppDbContext.cs
+│   └── Migrations/      # Database migration scripts
+├── wwwroot/             # Frontend Assets
+│   ├── index.html       # Main HTML
+│   ├── styles.css       # Global styles
+│   └── js/              # JavaScript modules
+│       ├── app.js
+│       ├── browse.js
+│       ├── dashboard.js
+│       ├── library.js
+│       ├── playback.js
+│       ├── servarr.js
+│       ├── settings.js
+│       └── ...
+├── docs/                # Documentation
+│   ├── PRD.md
+│   ├── ARCHITECTURE.md
+│   ├── DEVELOPER_GUIDE.md
+│   ├── CHANGELOG.md
+│   └── STORY_TRACKING.md
+├── .cursor/             # Cursor AI rules
+│   └── rules/            # Rule files
+│       ├── main-rules.mdc
+│       ├── version-management.mdc
+│       ├── code-patterns.mdc
+│       ├── integrations.mdc
+│       ├── common-tasks.mdc
+│       ├── best-practices.mdc
+│       └── file-structure.mdc
+├── VERSION              # Current version number
+├── Program.cs           # Application entry point
+└── optimarr.csproj      # Project file
+```

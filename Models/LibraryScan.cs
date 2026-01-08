@@ -20,6 +20,7 @@ namespace Optimarr.Models
         public int ProcessedFiles { get; set; }
         public int FailedFiles { get; set; }
         
+        public string? CurrentProcessingFile { get; set; }
         public string? ErrorMessage { get; set; }
         
         public virtual ICollection<VideoAnalysis> VideoAnalyses { get; set; } = new List<VideoAnalysis>();
