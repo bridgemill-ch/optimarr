@@ -85,11 +85,42 @@ namespace Optimarr.Services
                     await ApplySqlMigrationAsync(database, cancellationToken);
                     
                     // Verify migration was successful by checking if column exists
-                    var migrationVerified = await CheckIfSqlMigrationNeededAsync(database, cancellationToken);
-                    if (migrationVerified)
+                    // Close and reopen connection to ensure we see the latest state
+                    var connection = database.GetDbConnection();
+                    if (connection.State == System.Data.ConnectionState.Open)
                     {
-                        // Migration was supposed to add the column, but it still doesn't exist
-                        throw new InvalidOperationException("SQL migration completed but ServarrType column was not created. Migration may have failed silently.");
+                        await connection.CloseAsync();
+                    }
+                    await connection.OpenAsync(cancellationToken);
+                    
+                    try
+                    {
+                        using var verifyCommand = connection.CreateCommand();
+                        verifyCommand.CommandText = @"
+                            SELECT COUNT(*) FROM pragma_table_info('VideoAnalyses') 
+                            WHERE name='ServarrType'";
+                        
+                        var columnExists = Convert.ToInt32(await verifyCommand.ExecuteScalarAsync(cancellationToken)) > 0;
+                        
+                        _logger.LogInformation("Migration verification: ServarrType column exists = {Exists}", columnExists);
+                        
+                        if (!columnExists)
+                        {
+                            // Check what columns actually exist for debugging
+                            verifyCommand.CommandText = "SELECT name FROM pragma_table_info('VideoAnalyses') ORDER BY cid";
+                            using var reader = await verifyCommand.ExecuteReaderAsync(cancellationToken);
+                            var columns = new List<string>();
+                            while (await reader.ReadAsync(cancellationToken))
+                            {
+                                columns.Add(reader.GetString(0));
+                            }
+                            _logger.LogError("ServarrType column not found after migration. Existing columns: {Columns}", string.Join(", ", columns));
+                            throw new InvalidOperationException($"SQL migration completed but ServarrType column was not created. Existing columns: {string.Join(", ", columns)}");
+                        }
+                    }
+                    finally
+                    {
+                        await connection.CloseAsync();
                     }
                     
                     progress.AppliedMigrations = new List<string> { "AddServarrFields" };
@@ -288,15 +319,20 @@ namespace Optimarr.Services
                                 !s.StartsWith("--", StringComparison.OrdinalIgnoreCase))
                     .ToList();
                 
+                _logger.LogInformation("Split SQL into {Count} statements", statements.Count);
+                
                 using var transaction = await connection.BeginTransactionAsync(cancellationToken);
                 try
                 {
+                    int statementIndex = 0;
                     foreach (var statement in statements)
                     {
+                        statementIndex++;
                         // Skip transaction control statements as we handle them manually
                         if (statement.Equals("BEGIN TRANSACTION", StringComparison.OrdinalIgnoreCase) ||
                             statement.Equals("COMMIT", StringComparison.OrdinalIgnoreCase))
                         {
+                            _logger.LogDebug("Skipping transaction control statement: {Statement}", statement);
                             continue;
                         }
                         
@@ -304,10 +340,20 @@ namespace Optimarr.Services
                         command.Transaction = transaction;
                         command.CommandText = statement;
                         
-                        _logger.LogDebug("Executing SQL statement: {Statement}", 
-                            statement.Length > 100 ? statement.Substring(0, 100) + "..." : statement);
+                        var statementPreview = statement.Length > 200 ? statement.Substring(0, 200) + "..." : statement;
+                        _logger.LogInformation("Executing SQL statement {Index}/{Total}: {Statement}", 
+                            statementIndex, statements.Count, statementPreview);
                         
-                        await command.ExecuteNonQueryAsync(cancellationToken);
+                        try
+                        {
+                            var rowsAffected = await command.ExecuteNonQueryAsync(cancellationToken);
+                            _logger.LogDebug("Statement {Index} executed successfully, rows affected: {Rows}", statementIndex, rowsAffected);
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(ex, "Error executing statement {Index}: {Statement}", statementIndex, statementPreview);
+                            throw;
+                        }
                     }
                     
                     // After VideoAnalyses migration, add CurrentProcessingFile to LibraryScans if needed
