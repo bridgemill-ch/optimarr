@@ -180,17 +180,39 @@ namespace Optimarr.Services
                     
                     if (!tableExists)
                     {
+                        _logger.LogDebug("VideoAnalyses table doesn't exist, EnsureCreated will handle it");
                         return false; // Table doesn't exist, EnsureCreated will handle it
                     }
                     
-                    // Check if ServarrType column exists
+                    // Check if ServarrType column exists in VideoAnalyses
                     command.CommandText = @"
                         SELECT COUNT(*) FROM pragma_table_info('VideoAnalyses') 
                         WHERE name='ServarrType'";
                     
-                    var columnExists = Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken)) > 0;
+                    var servarrColumnExists = Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken)) > 0;
                     
-                    return !columnExists; // Migration needed if column doesn't exist
+                    // Check if CurrentProcessingFile column exists in LibraryScans
+                    command.CommandText = @"
+                        SELECT COUNT(*) FROM sqlite_master 
+                        WHERE type='table' AND name='LibraryScans'";
+                    
+                    var libraryScansExists = Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken)) > 0;
+                    var libraryScanColumnExists = false;
+                    
+                    if (libraryScansExists)
+                    {
+                        command.CommandText = @"
+                            SELECT COUNT(*) FROM pragma_table_info('LibraryScans') 
+                            WHERE name='CurrentProcessingFile'";
+                        libraryScanColumnExists = Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken)) > 0;
+                    }
+                    
+                    var migrationNeeded = !servarrColumnExists || (libraryScansExists && !libraryScanColumnExists);
+                    
+                    _logger.LogDebug("Migration check: ServarrType exists={ServarrExists}, CurrentProcessingFile exists={CurrentFileExists}, Migration needed={Needed}",
+                        servarrColumnExists, libraryScanColumnExists, migrationNeeded);
+                    
+                    return migrationNeeded;
                 }
                 finally
                 {
@@ -288,6 +310,29 @@ namespace Optimarr.Services
                         await command.ExecuteNonQueryAsync(cancellationToken);
                     }
                     
+                    // After VideoAnalyses migration, add CurrentProcessingFile to LibraryScans if needed
+                    // Check if column exists first
+                    using var checkCommand = connection.CreateCommand();
+                    checkCommand.Transaction = transaction;
+                    checkCommand.CommandText = @"
+                        SELECT COUNT(*) FROM pragma_table_info('LibraryScans') 
+                        WHERE name='CurrentProcessingFile'";
+                    
+                    var currentFileExists = Convert.ToInt32(await checkCommand.ExecuteScalarAsync(cancellationToken)) > 0;
+                    
+                    if (!currentFileExists)
+                    {
+                        _logger.LogInformation("Adding CurrentProcessingFile column to LibraryScans table");
+                        using var addColumnCommand = connection.CreateCommand();
+                        addColumnCommand.Transaction = transaction;
+                        addColumnCommand.CommandText = "ALTER TABLE LibraryScans ADD COLUMN CurrentProcessingFile TEXT";
+                        await addColumnCommand.ExecuteNonQueryAsync(cancellationToken);
+                    }
+                    else
+                    {
+                        _logger.LogDebug("CurrentProcessingFile column already exists in LibraryScans");
+                    }
+                    
                     await transaction.CommitAsync(cancellationToken);
                     _logger.LogInformation("SQL migration applied successfully");
                 }
@@ -312,8 +357,10 @@ namespace Optimarr.Services
         private string GetEmbeddedMigrationSql()
         {
             // Embedded SQL migration as fallback if file is not found
+            // This handles both VideoAnalyses Servarr fields and LibraryScans CurrentProcessingFile
             return @"BEGIN TRANSACTION;
 
+-- Migrate VideoAnalyses table to add Servarr fields
 CREATE TABLE VideoAnalyses_new (
     Id INTEGER PRIMARY KEY AUTOINCREMENT,
     FilePath TEXT NOT NULL,
@@ -382,6 +429,11 @@ CREATE INDEX IF NOT EXISTS IX_VideoAnalyses_FilePath ON VideoAnalyses(FilePath);
 CREATE INDEX IF NOT EXISTS IX_VideoAnalyses_LibraryScanId ON VideoAnalyses(LibraryScanId);
 CREATE INDEX IF NOT EXISTS IX_VideoAnalyses_AnalyzedAt ON VideoAnalyses(AnalyzedAt);
 CREATE INDEX IF NOT EXISTS IX_VideoAnalyses_OverallScore ON VideoAnalyses(OverallScore);
+
+-- Add CurrentProcessingFile to LibraryScans if it doesn't exist
+-- SQLite supports ALTER TABLE ADD COLUMN for nullable columns
+-- Check if column exists first (using a workaround since we can't use IF NOT EXISTS with ALTER TABLE)
+-- We'll try to add it and ignore the error if it already exists
 
 COMMIT;";
         }
