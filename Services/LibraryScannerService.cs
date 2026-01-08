@@ -165,36 +165,42 @@ namespace Optimarr.Services
             return scan;
         }
 
-        public void CancelScan(int scanId)
+        public async Task CancelScan(int scanId)
         {
             _logger.LogInformation("Cancelling scan: {ScanId}", scanId);
             
-            // Cancel the specific scan's cancellation token
+            // Cancel the token for this specific scan
             if (_scanCancellationTokens.TryGetValue(scanId, out var cts))
             {
                 cts.Cancel();
                 _logger.LogInformation("Cancellation token triggered for scan: {ScanId}", scanId);
+                
+                // Immediately update scan status to Cancelled
+                try
+                {
+                    using var scope = _serviceScopeFactory?.CreateScope();
+                    if (scope != null)
+                    {
+                        var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                        var scan = await dbContext.LibraryScans.FindAsync(scanId);
+                        if (scan != null && (scan.Status == ScanStatus.Running || scan.Status == ScanStatus.Pending))
+                        {
+                            scan.Status = ScanStatus.Cancelled;
+                            scan.CompletedAt = DateTime.UtcNow;
+                            scan.ErrorMessage = "Scan was cancelled by user";
+                            await dbContext.SaveChangesAsync();
+                            _logger.LogInformation("Scan {ScanId} status updated to Cancelled", scanId);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error updating scan status to Cancelled for scan: {ScanId}", scanId);
+                }
             }
             else
             {
                 _logger.LogWarning("No cancellation token found for scan: {ScanId}", scanId);
-            }
-            
-            // Update scan status in database
-            try
-            {
-                var scan = _dbContext.LibraryScans.Find(scanId);
-                if (scan != null && (scan.Status == ScanStatus.Pending || scan.Status == ScanStatus.Running))
-                {
-                    scan.Status = ScanStatus.Cancelled;
-                    scan.CompletedAt = DateTime.UtcNow;
-                    _dbContext.SaveChanges();
-                    _logger.LogInformation("Scan {ScanId} status updated to Cancelled", scanId);
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error updating scan status to Cancelled for scan: {ScanId}", scanId);
             }
         }
 
@@ -254,7 +260,7 @@ namespace Optimarr.Services
 
                 // Create cancellation token source for this specific scan
                 var cts = new CancellationTokenSource();
-                _scanCancellationTokens[scanId] = cts;
+                _scanCancellationTokens.TryAdd(scanId, cts);
                 var cancellationToken = cts.Token;
                 _scanStartTime = DateTime.UtcNow;
                 scan.CurrentProcessingFile = null;
@@ -305,8 +311,16 @@ namespace Optimarr.Services
                             break;
                         }
 
-                        // Wait for available slot
-                        await semaphore.WaitAsync(cancellationToken);
+                        // Wait for available slot (this will throw if cancelled)
+                        try
+                        {
+                            await semaphore.WaitAsync(cancellationToken);
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            _logger.LogWarning("Semaphore wait cancelled for scan {ScanId}", scanId);
+                            break; // Exit the loop if cancelled
+                        }
 
                         var task = Task.Run(async () =>
                         {
@@ -316,9 +330,6 @@ namespace Optimarr.Services
                                 cancellationToken.ThrowIfCancellationRequested();
                                 
                                 _logger.LogInformation(">>> FILE START: {FileName}", Path.GetFileName(filePath));
-                                
-                                // Check cancellation again before processing
-                                cancellationToken.ThrowIfCancellationRequested();
 
                                 // Update current processing file in database
                                 lock (lockObject)
@@ -372,16 +383,10 @@ namespace Optimarr.Services
                                     var taskDbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
                                     var taskVideoAnalyzer = scope.ServiceProvider.GetRequiredService<VideoAnalyzerService>();
 
-                                    // Check cancellation before analysis
-                                    cancellationToken.ThrowIfCancellationRequested();
-                                    
                                     // Analyze the file (this is CPU/IO intensive work)
                                     var analysisStartTime = DateTime.UtcNow;
                                     await AnalyzeAndStoreAsync(filePath, scanId, taskDbContext, taskVideoAnalyzer);
                                     var analysisDuration = DateTime.UtcNow - analysisStartTime;
-                                    
-                                    // Check cancellation after analysis
-                                    cancellationToken.ThrowIfCancellationRequested();
 
                                     // Increment processed count AFTER successful analysis
                                     var currentIndex = Interlocked.Increment(ref processedCount);
@@ -470,28 +475,20 @@ namespace Optimarr.Services
                         tasks.Add(task);
                     }
 
-                    // Wait for all tasks to complete, but handle cancellation
+                    // Wait for all tasks to complete, but check for cancellation
                     try
                     {
                         await Task.WhenAll(tasks);
                     }
                     catch (OperationCanceledException)
                     {
-                        _logger.LogWarning("Scan {ScanId} was cancelled during task execution", scanId);
-                        // Don't throw - we'll handle cancellation below
-                    }
-                    
-                    // Check if cancellation was requested
-                    if (cancellationToken.IsCancellationRequested)
-                    {
-                        _logger.LogInformation("Scan {ScanId} cancellation detected, updating status", scanId);
-                        scan.Status = ScanStatus.Cancelled;
-                        scan.CompletedAt = DateTime.UtcNow;
-                        await dbContext.SaveChangesAsync();
-                        
-                        // Clean up cancellation token
-                        _scanCancellationTokens.TryRemove(scanId, out _);
-                        return;
+                        _logger.LogWarning("Tasks cancelled, stopping scan {ScanId}", scanId);
+                        // Cancel remaining tasks
+                        foreach (var task in tasks.Where(t => !t.IsCompleted))
+                        {
+                            // Tasks will check cancellation token themselves
+                        }
+                        throw; // Re-throw to be caught by outer catch
                     }
 
                     // Save all failed files to database
@@ -534,23 +531,10 @@ namespace Optimarr.Services
                         processed, failed, scan.TotalFiles);
 
                     _logger.LogInformation("=== STEP 5: Marking scan as completed ===");
-                    
-                    // Check cancellation one more time before marking as completed
-                    if (cancellationToken.IsCancellationRequested)
-                    {
-                        _logger.LogInformation("Scan {ScanId} was cancelled before completion", scanId);
-                        scan.Status = ScanStatus.Cancelled;
-                    }
-                    else
-                    {
-                        scan.Status = ScanStatus.Completed;
-                    }
+                    scan.Status = ScanStatus.Completed;
                     scan.CompletedAt = DateTime.UtcNow;
                     var totalDuration = DateTime.UtcNow - scan.StartedAt;
                     await dbContext.SaveChangesAsync();
-                    
-                    // Clean up cancellation token
-                    _scanCancellationTokens.TryRemove(scanId, out _);
 
                     _logger.LogInformation("=== SCAN COMPLETE: Scan {ScanId} finished successfully ===", scanId);
                     _logger.LogInformation("Duration: {Duration}, Processed: {Processed}, Failed: {Failed}, Total: {Total}", 
@@ -588,27 +572,6 @@ namespace Optimarr.Services
                     throw;
                 }
             }
-            catch (OperationCanceledException)
-            {
-                _logger.LogInformation("=== SCAN CANCELLED: Scan {ScanId} was cancelled ===", scanId);
-                try
-                {
-                    var cancelledScan = dbContext.LibraryScans.Find(scanId);
-                    if (cancelledScan != null)
-                    {
-                        cancelledScan.Status = ScanStatus.Cancelled;
-                        cancelledScan.CompletedAt = DateTime.UtcNow;
-                        await dbContext.SaveChangesAsync();
-                    }
-                }
-                catch (Exception dbEx)
-                {
-                    _logger.LogError(dbEx, "Failed to update scan status to Cancelled");
-                }
-                
-                // Clean up cancellation token
-                _scanCancellationTokens.TryRemove(scanId, out _);
-            }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "=== SCAN FAILED: Scan {ScanId} encountered an error ===", scanId);
@@ -639,14 +602,14 @@ namespace Optimarr.Services
                     _logger.LogError(dbEx, "Failed to update scan status in catch block");
                 }
                 
-                // Clean up cancellation token on error
-                _scanCancellationTokens.TryRemove(scanId, out _);
-                
                 // Re-throw to be caught by background task handler
                 throw;
             }
             finally
             {
+                // Clean up cancellation token
+                _scanCancellationTokens.TryRemove(scanId, out _);
+                
                 try
                 {
                     var finalScan = await dbContext.LibraryScans.FindAsync(scanId);

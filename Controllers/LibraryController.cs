@@ -418,9 +418,9 @@ namespace Optimarr.Controllers
         }
 
         [HttpPost("scans/{id}/cancel")]
-        public ActionResult CancelScan(int id)
+        public async Task<ActionResult> CancelScan(int id)
         {
-            _scannerService.CancelScan(id);
+            await _scannerService.CancelScan(id);
             return Ok(new { message = "Scan cancellation requested" });
         }
 
