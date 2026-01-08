@@ -311,27 +311,39 @@ namespace Optimarr.Services
             
             try
             {
-                // Remove comments and clean up SQL
-                var cleanedSql = string.Join("\n", sql.Split('\n')
+                // Remove comments first
+                var lines = sql.Split('\n')
                     .Where(line => !line.Trim().StartsWith("--", StringComparison.OrdinalIgnoreCase))
-                    .Select(line => line.Trim()));
+                    .ToList();
                 
-                // SQLite requires statements to be executed separately
-                // Split by semicolon, but be careful with multi-line statements
-                // First, remove BEGIN TRANSACTION and COMMIT as we handle them manually
+                var cleanedSql = string.Join("\n", lines);
+                
+                // Remove BEGIN TRANSACTION and COMMIT as we handle them manually
                 var sqlWithoutTransactions = cleanedSql
                     .Replace("BEGIN TRANSACTION", "", StringComparison.OrdinalIgnoreCase)
                     .Replace("COMMIT", "", StringComparison.OrdinalIgnoreCase);
                 
-                // Split by semicolon and filter out empty statements
-                var statements = sqlWithoutTransactions
+                // Split by semicolon - this should work for SQLite
+                // But we need to be careful - semicolons inside parentheses should be preserved
+                // For now, simple split should work since SQLite statements end with semicolon
+                var rawStatements = sqlWithoutTransactions
                     .Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries)
                     .Select(s => s.Trim())
                     .Where(s => !string.IsNullOrWhiteSpace(s))
                     .ToList();
                 
-                _logger.LogInformation("Split SQL into {Count} statements", statements.Count);
-                _logger.LogDebug("Statements: {Statements}", string.Join(" | ", statements.Select((s, i) => $"{i + 1}: {s.Substring(0, Math.Min(50, s.Length))}...")));
+                _logger.LogInformation("Split SQL into {Count} raw statements", rawStatements.Count);
+                
+                // Log first 100 chars of each statement for debugging
+                for (int i = 0; i < rawStatements.Count; i++)
+                {
+                    var preview = rawStatements[i].Length > 100 
+                        ? rawStatements[i].Substring(0, 100) + "..." 
+                        : rawStatements[i];
+                    _logger.LogDebug("Statement {Index}: {Preview}", i + 1, preview);
+                }
+                
+                var statements = rawStatements;
                 
                 using var transaction = await connection.BeginTransactionAsync(cancellationToken);
                 try
