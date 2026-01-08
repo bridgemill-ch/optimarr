@@ -279,7 +279,11 @@ export async function startScanPolling(scanId) {
     }
     
     // Create progress element for this scan
-    createScanProgressElement(scanId, libraryPath);
+    const element = createScanProgressElement(scanId, libraryPath);
+    if (!element) {
+        console.error('Failed to create scan progress element');
+        return;
+    }
     
     const pollInterval = setInterval(async () => {
         try {
