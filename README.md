@@ -6,6 +6,14 @@ A web-based application for analyzing video files to determine their compatibili
 
 **This software is in early development stage. Use it at your own risk. The developers are not responsible for any data loss, system damage, or other issues that may arise from using this software. Always backup your data before installation and use.**
 
+### Support the Project
+
+If you find Optimarr useful, consider supporting the project:
+
+[![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-FFDD00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black)](https://buymeacoffee.com/bridgemill)
+
+[Support on Buy Me a Coffee](https://buymeacoffee.com/bridgemill)
+
 ## Features
 
 ### Core Functionality
@@ -249,6 +257,8 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 ## Support
 
 For issues and questions, please open an issue on the project repository.
+
+
 
 ## Acknowledgments
 
