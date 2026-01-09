@@ -254,8 +254,14 @@ namespace Optimarr.Controllers
             _logger.LogInformation("Full Servarr library sync requested");
             try
             {
-                var radarrResult = await _syncService.SyncRadarrAsync();
-                var sonarrResult = await _syncService.SyncSonarrAsync();
+                // Run Radarr and Sonarr syncs in parallel for better performance
+                var radarrTask = _syncService.SyncRadarrAsync();
+                var sonarrTask = _syncService.SyncSonarrAsync();
+                
+                await Task.WhenAll(radarrTask, sonarrTask);
+                
+                var radarrResult = await radarrTask;
+                var sonarrResult = await sonarrTask;
 
                 return Ok(new
                 {

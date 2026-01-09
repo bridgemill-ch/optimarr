@@ -214,10 +214,12 @@ namespace Optimarr.Services
 
                     // Load all episodes in parallel for better performance
                     var sonarrEpisodesConcurrent = new ConcurrentDictionary<string, SonarrEpisode>();
-                    var semaphore = new SemaphoreSlim(10, 10); // Limit to 10 concurrent series processing
+                    // Increase concurrency for large libraries (20 concurrent series, 50 concurrent episode files)
+                    var seriesSemaphore = new SemaphoreSlim(20, 20);
+                    var episodeFileSemaphore = new SemaphoreSlim(50, 50);
                     var tasks = allSeries.Select(async series =>
                     {
-                        await semaphore.WaitAsync();
+                        await seriesSemaphore.WaitAsync();
                         try
                         {
                             var episodes = await _sonarrService.GetEpisodesBySeries(series.Id);
@@ -225,6 +227,7 @@ namespace Optimarr.Services
                                 .Where(e => e.EpisodeFileId.HasValue)
                                 .Select(async episode =>
                                 {
+                                    await episodeFileSemaphore.WaitAsync();
                                     try
                                     {
                                         var episodeFile = await _sonarrService.GetEpisodeFile(episode.EpisodeFileId!.Value);
@@ -239,6 +242,10 @@ namespace Optimarr.Services
                                         _logger.LogWarning(ex, "Error loading episode file {EpisodeFileId} for series {SeriesId}", 
                                             episode.EpisodeFileId.Value, series.Id);
                                     }
+                                    finally
+                                    {
+                                        episodeFileSemaphore.Release();
+                                    }
                                 });
                             await Task.WhenAll(episodeFileTasks);
                         }
@@ -248,7 +255,7 @@ namespace Optimarr.Services
                         }
                         finally
                         {
-                            semaphore.Release();
+                            seriesSemaphore.Release();
                         }
                     });
                     await Task.WhenAll(tasks);
@@ -267,18 +274,30 @@ namespace Optimarr.Services
                 {
                     _logger.LogInformation("Loading Radarr movies...");
                     var movies = await _radarrService.GetMovies();
-                    radarrMovies = new Dictionary<string, RadarrMovie>();
-                    foreach (var movie in movies)
+                    // Use ConcurrentDictionary for thread-safe parallel processing
+                    var radarrMoviesConcurrent = new ConcurrentDictionary<string, RadarrMovie>();
+                    
+                    // Process movies in parallel batches for better performance
+                    var movieSemaphore = new SemaphoreSlim(50, 50); // Process 50 movies concurrently
+                    var movieTasks = movies.Select(async movie =>
                     {
-                        if (movie.MovieFile != null && !string.IsNullOrEmpty(movie.MovieFile.Path))
+                        await movieSemaphore.WaitAsync();
+                        try
                         {
-                            var normalizedPath = NormalizePath(movie.MovieFile.Path);
-                            if (!radarrMovies.ContainsKey(normalizedPath))
+                            if (movie.MovieFile != null && !string.IsNullOrEmpty(movie.MovieFile.Path))
                             {
-                                radarrMovies[normalizedPath] = movie;
+                                var normalizedPath = NormalizePath(movie.MovieFile.Path);
+                                radarrMoviesConcurrent.TryAdd(normalizedPath, movie);
                             }
                         }
-                    }
+                        finally
+                        {
+                            movieSemaphore.Release();
+                        }
+                    });
+                    await Task.WhenAll(movieTasks);
+                    
+                    radarrMovies = radarrMoviesConcurrent.ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
                     _logger.LogInformation("Loaded {MovieCount} movie paths from Radarr", radarrMovies.Count);
                 }
                 catch (Exception ex)
@@ -291,11 +310,11 @@ namespace Optimarr.Services
             var matchedCount = 0;
             var processedCount = 0;
             var errorCount = 0;
-            const int videoBatchSize = 500; // Process videos in batches of 500 to reduce memory usage
-            const int saveBatchSize = 50; // Save every 50 videos
-            const int logInterval = 100; // Log progress every 100 videos
+            const int videoBatchSize = 1000; // Process videos in larger batches for better performance
+            const int saveBatchSize = 100; // Save every 100 videos (reduces database writes)
+            const int logInterval = 200; // Log progress every 200 videos
             const int progressUpdateInterval = 10; // Update progress every 10 videos (more frequent for better UX)
-            const int maxConcurrency = 10; // Maximum concurrent video matching operations
+            const int maxConcurrency = 20; // Increased concurrency for large libraries (was 10)
 
             var matchingSemaphore = new SemaphoreSlim(maxConcurrency, maxConcurrency);
             var processedLock = new object();
@@ -481,10 +500,11 @@ namespace Optimarr.Services
                     var allSeries = await _sonarrService.GetSeries();
                     sonarrSeries = allSeries.ToDictionary(s => s.Id, s => s);
                     var sonarrEpisodesConcurrent = new ConcurrentDictionary<string, SonarrEpisode>();
-                    var semaphore = new SemaphoreSlim(10, 10);
+                    var seriesSemaphore = new SemaphoreSlim(20, 20);
+                    var episodeFileSemaphore = new SemaphoreSlim(50, 50);
                     var tasks = allSeries.Select(async series =>
                     {
-                        await semaphore.WaitAsync();
+                        await seriesSemaphore.WaitAsync();
                         try
                         {
                             var episodes = await _sonarrService.GetEpisodesBySeries(series.Id);
@@ -492,6 +512,7 @@ namespace Optimarr.Services
                                 .Where(e => e.EpisodeFileId.HasValue)
                                 .Select(async episode =>
                                 {
+                                    await episodeFileSemaphore.WaitAsync();
                                     try
                                     {
                                         var episodeFile = await _sonarrService.GetEpisodeFile(episode.EpisodeFileId!.Value);
@@ -502,13 +523,17 @@ namespace Optimarr.Services
                                         }
                                     }
                                     catch { }
+                                    finally
+                                    {
+                                        episodeFileSemaphore.Release();
+                                    }
                                 });
                             await Task.WhenAll(episodeFileTasks);
                         }
                         catch { }
                         finally
                         {
-                            semaphore.Release();
+                            seriesSemaphore.Release();
                         }
                     });
                     await Task.WhenAll(tasks);
@@ -522,18 +547,26 @@ namespace Optimarr.Services
                 try
                 {
                     var movies = await _radarrService.GetMovies();
-                    radarrMovies = new Dictionary<string, RadarrMovie>();
-                    foreach (var movie in movies)
+                    var radarrMoviesConcurrent = new ConcurrentDictionary<string, RadarrMovie>();
+                    var movieSemaphore = new SemaphoreSlim(50, 50);
+                    var movieTasks = movies.Select(async movie =>
                     {
-                        if (movie.MovieFile != null && !string.IsNullOrEmpty(movie.MovieFile.Path))
+                        await movieSemaphore.WaitAsync();
+                        try
                         {
-                            var normalizedPath = NormalizePath(movie.MovieFile.Path);
-                            if (!radarrMovies.ContainsKey(normalizedPath))
+                            if (movie.MovieFile != null && !string.IsNullOrEmpty(movie.MovieFile.Path))
                             {
-                                radarrMovies[normalizedPath] = movie;
+                                var normalizedPath = NormalizePath(movie.MovieFile.Path);
+                                radarrMoviesConcurrent.TryAdd(normalizedPath, movie);
                             }
                         }
-                    }
+                        finally
+                        {
+                            movieSemaphore.Release();
+                        }
+                    });
+                    await Task.WhenAll(movieTasks);
+                    radarrMovies = radarrMoviesConcurrent.ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
                 }
                 catch { }
             }
@@ -541,8 +574,8 @@ namespace Optimarr.Services
             var matchedCount = 0;
             var processedCount = 0;
             var errorCount = 0;
-            const int videoBatchSize = 500;
-            const int maxConcurrency = 10;
+            const int videoBatchSize = 1000; // Larger batches for better performance
+            const int maxConcurrency = 20; // Increased concurrency for large libraries
 
             var matchingSemaphore = new SemaphoreSlim(maxConcurrency, maxConcurrency);
             var processedLock = new object();
