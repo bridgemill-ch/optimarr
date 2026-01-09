@@ -9,6 +9,7 @@ using Optimarr.Services;
 using System.IO;
 using System.Linq;
 using System.Security;
+using System.Threading;
 
 namespace Optimarr.Controllers
 {
@@ -18,6 +19,7 @@ namespace Optimarr.Controllers
     {
         private readonly AppDbContext _dbContext;
         private readonly LibraryScannerService _scannerService;
+        private readonly VideoAnalyzerService _videoAnalyzer;
         private readonly ILogger<LibraryController> _logger;
         private readonly IConfiguration _configuration;
         private readonly IWebHostEnvironment _environment;
@@ -26,6 +28,7 @@ namespace Optimarr.Controllers
         public LibraryController(
             AppDbContext dbContext,
             LibraryScannerService scannerService,
+            VideoAnalyzerService videoAnalyzer,
             ILogger<LibraryController> logger,
             IConfiguration configuration,
             IWebHostEnvironment environment,
@@ -33,6 +36,7 @@ namespace Optimarr.Controllers
         {
             _dbContext = dbContext;
             _scannerService = scannerService;
+            _videoAnalyzer = videoAnalyzer;
             _logger = logger;
             _configuration = configuration;
             _environment = environment;
@@ -53,6 +57,209 @@ namespace Optimarr.Controllers
                 return "Good";
             else
                 return "Poor";
+        }
+
+        // Reconstruct VideoInfo from VideoAnalysis database record
+        private VideoInfo ReconstructVideoInfo(VideoAnalysis video)
+        {
+            var videoInfo = new VideoInfo
+            {
+                FilePath = video.FilePath,
+                Container = video.Container,
+                VideoCodec = video.VideoCodec,
+                VideoCodecTag = video.VideoCodecTag,
+                IsCodecTagCorrect = video.IsCodecTagCorrect,
+                BitDepth = video.BitDepth,
+                Width = video.Width,
+                Height = video.Height,
+                FrameRate = video.FrameRate,
+                IsHDR = video.IsHDR,
+                HDRType = video.HDRType,
+                IsFastStart = video.IsFastStart,
+                FileSize = video.FileSize,
+                Duration = video.Duration
+            };
+
+            // Reconstruct audio tracks from JSON
+            if (!string.IsNullOrEmpty(video.AudioTracksJson))
+            {
+                try
+                {
+                    videoInfo.AudioTracks = System.Text.Json.JsonSerializer.Deserialize<List<AudioTrack>>(
+                        video.AudioTracksJson,
+                        new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true }
+                    ) ?? new List<AudioTrack>();
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to deserialize audio tracks for video ID {Id}", video.Id);
+                    videoInfo.AudioTracks = new List<AudioTrack>();
+                }
+            }
+
+            // Reconstruct subtitle tracks from JSON
+            if (!string.IsNullOrEmpty(video.SubtitleTracksJson))
+            {
+                try
+                {
+                    videoInfo.SubtitleTracks = System.Text.Json.JsonSerializer.Deserialize<List<SubtitleTrack>>(
+                        video.SubtitleTracksJson,
+                        new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true }
+                    ) ?? new List<SubtitleTrack>();
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to deserialize subtitle tracks for video ID {Id}", video.Id);
+                    videoInfo.SubtitleTracks = new List<SubtitleTrack>();
+                }
+            }
+
+            return videoInfo;
+        }
+
+        // Recalculate compatibility for all videos in the database
+        private async Task RecalculateCompatibilityForAllVideosAsync()
+        {
+            _logger.LogInformation("Starting compatibility recalculation for all videos");
+
+            try
+            {
+                // Load all videos from database
+                var videos = await _dbContext.VideoAnalyses
+                    .Where(v => !v.IsBroken) // Skip broken videos
+                    .ToListAsync();
+
+                _logger.LogInformation("Recalculating compatibility for {Count} videos", videos.Count);
+
+                var updatedCount = 0;
+                var errorCount = 0;
+
+                // Process videos in batches to avoid memory issues
+                const int batchSize = 100;
+                for (int i = 0; i < videos.Count; i += batchSize)
+                {
+                    var batch = videos.Skip(i).Take(batchSize).ToList();
+                    
+                    foreach (var video in batch)
+                    {
+                        try
+                        {
+                            // Reconstruct VideoInfo from database record
+                            var videoInfo = ReconstructVideoInfo(video);
+
+                            // Recalculate compatibility using current settings
+                            var compatibilityResult = _videoAnalyzer.RecalculateCompatibility(videoInfo);
+
+                            // Update video record with new compatibility data
+                            video.CompatibilityRating = compatibilityResult.CompatibilityRating;
+                            video.DirectPlayClients = compatibilityResult.ClientResults.Values.Count(r => r.Status == "Direct Play");
+                            video.RemuxClients = compatibilityResult.ClientResults.Values.Count(r => r.Status == "Remux");
+                            video.TranscodeClients = compatibilityResult.ClientResults.Values.Count(r => r.Status == "Transcode");
+                            video.OverallScore = ParseScore(compatibilityResult.OverallScore);
+                            video.Issues = System.Text.Json.JsonSerializer.Serialize(compatibilityResult.Issues);
+                            video.Recommendations = System.Text.Json.JsonSerializer.Serialize(compatibilityResult.Recommendations);
+                            video.ClientResults = System.Text.Json.JsonSerializer.Serialize(compatibilityResult.ClientResults);
+
+                            // Generate new report
+                            var reportGenerator = new ReportGenerator();
+                            video.FullReport = reportGenerator.GenerateReport(videoInfo, compatibilityResult);
+
+                            updatedCount++;
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(ex, "Error recalculating compatibility for video ID {Id}", video.Id);
+                            errorCount++;
+                        }
+                    }
+
+                    // Save batch
+                    await _dbContext.SaveChangesAsync();
+                    _logger.LogInformation("Processed batch: {Processed}/{Total} videos updated, {Errors} errors", 
+                        updatedCount, videos.Count, errorCount);
+                }
+
+                _logger.LogInformation("Compatibility recalculation completed: {Updated} updated, {Errors} errors", 
+                    updatedCount, errorCount);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error during compatibility recalculation");
+                throw;
+            }
+        }
+
+        // Helper to parse CompatibilityScore enum from string
+        private CompatibilityScore ParseScore(string score)
+        {
+            return score switch
+            {
+                "Optimal" => CompatibilityScore.Optimal,
+                "Good" => CompatibilityScore.Good,
+                "Poor" => CompatibilityScore.Poor,
+                _ => CompatibilityScore.Unknown
+            };
+        }
+
+        [HttpGet("processing/count")]
+        public async Task<ActionResult<int>> GetProcessingCount()
+        {
+            try
+            {
+                var count = await _dbContext.VideoAnalyses
+                    .CountAsync(v => v.ProcessingStatus == ProcessingStatus.Processing);
+                
+                return Ok(count);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error getting processing count");
+                return StatusCode(500, new { error = ex.Message });
+            }
+        }
+
+        [HttpGet("processing/videos")]
+        public async Task<ActionResult<object>> GetProcessingVideos([FromQuery] int page = 1, [FromQuery] int pageSize = 20)
+        {
+            try
+            {
+                var query = _dbContext.VideoAnalyses
+                    .Where(v => v.ProcessingStatus == ProcessingStatus.Processing)
+                    .OrderByDescending(v => v.ProcessingStartedAt);
+
+                var totalCount = await query.CountAsync();
+                var videos = await query
+                    .Skip((page - 1) * pageSize)
+                    .Take(pageSize)
+                    .Select(v => new
+                    {
+                        v.Id,
+                        v.FilePath,
+                        v.FileName,
+                        v.ProcessingStartedAt,
+                        v.ServarrType,
+                        v.SonarrSeriesTitle,
+                        v.SonarrEpisodeNumber,
+                        v.SonarrSeasonNumber,
+                        v.RadarrMovieTitle,
+                        v.RadarrYear
+                    })
+                    .ToListAsync();
+
+                return Ok(new
+                {
+                    videos,
+                    totalCount,
+                    page,
+                    pageSize,
+                    totalPages = (int)Math.Ceiling(totalCount / (double)pageSize)
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error getting processing videos");
+                return StatusCode(500, new { error = ex.Message });
+            }
         }
 
         [HttpPost("scan")]
@@ -845,6 +1052,137 @@ namespace Optimarr.Controllers
             }
         }
 
+        [HttpGet("videos/ids")]
+        public async Task<ActionResult<List<int>>> GetVideoIds(
+            [FromQuery] string? codec = null,
+            [FromQuery] string? container = null,
+            [FromQuery] string? score = null,
+            [FromQuery] int? libraryPathId = null,
+            [FromQuery] string? search = null,
+            [FromQuery] bool? isBroken = null,
+            [FromQuery] string? servarrFilter = null)
+        {
+            try
+            {
+                var query = _dbContext.VideoAnalyses.AsQueryable();
+
+                if (!string.IsNullOrEmpty(codec))
+                    query = query.Where(v => v.VideoCodec == codec);
+                
+                if (!string.IsNullOrEmpty(container))
+                    query = query.Where(v => v.Container == container);
+
+                string? libraryPathFilter = null;
+                if (libraryPathId.HasValue)
+                {
+                    var libraryPath = await _dbContext.LibraryPaths
+                        .FirstOrDefaultAsync(lp => lp.Id == libraryPathId.Value);
+                    
+                    if (libraryPath != null)
+                    {
+                        libraryPathFilter = libraryPath.Path;
+                    }
+                    else
+                    {
+                        libraryPathFilter = string.Empty;
+                    }
+                }
+                
+                if (libraryPathFilter != null)
+                {
+                    var filterPath = libraryPathFilter;
+                    query = query.Where(v => v.LibraryScan != null && v.LibraryScan.LibraryPath == filterPath);
+                }
+
+                if (!string.IsNullOrEmpty(search))
+                {
+                    var searchLower = search.ToLowerInvariant();
+                    query = query.Where(v => 
+                        (v.FileName != null && v.FileName.ToLower().Contains(searchLower)) ||
+                        (v.FilePath != null && v.FilePath.ToLower().Contains(searchLower)) ||
+                        (v.VideoCodec != null && v.VideoCodec.ToLower().Contains(searchLower)) ||
+                        (v.Container != null && v.Container.ToLower().Contains(searchLower)) ||
+                        (v.AudioCodecs != null && v.AudioCodecs.ToLower().Contains(searchLower)) ||
+                        (v.SubtitleFormats != null && v.SubtitleFormats.ToLower().Contains(searchLower)));
+                }
+
+                if (isBroken.HasValue)
+                {
+                    query = query.Where(v => v.IsBroken == isBroken.Value);
+                }
+
+                if (!string.IsNullOrEmpty(servarrFilter))
+                {
+                    var filterLower = servarrFilter.ToLowerInvariant();
+                    if (filterLower == "synced")
+                    {
+                        query = query.Where(v => !string.IsNullOrEmpty(v.ServarrType));
+                    }
+                    else if (filterLower == "not-synced")
+                    {
+                        query = query.Where(v => string.IsNullOrEmpty(v.ServarrType));
+                    }
+                }
+
+                // Load all matching videos to recalculate scores and filter
+                var allVideos = await query.ToListAsync();
+
+                // Recalculate OverallScore dynamically based on current thresholds
+                foreach (var video in allVideos)
+                {
+                    try
+                    {
+                        var recalculatedScore = CalculateOverallScore(
+                            video.CompatibilityRating, 
+                            video.RemuxClients, 
+                            video.VideoCodec, 
+                            video.BitDepth);
+                        
+                        if (Enum.TryParse<CompatibilityScore>(recalculatedScore, true, out var parsedScore))
+                        {
+                            video.OverallScore = parsedScore;
+                        }
+                        else
+                        {
+                            video.OverallScore = CompatibilityScore.Unknown;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Error recalculating score for video {VideoId}, defaulting to Unknown", video.Id);
+                        video.OverallScore = CompatibilityScore.Unknown;
+                    }
+                }
+
+                // Apply score filter after recalculation if specified
+                if (!string.IsNullOrEmpty(score))
+                {
+                    var targetScore = score.Trim();
+                    allVideos = allVideos.Where(v => 
+                    {
+                        try
+                        {
+                            var calculatedScore = CalculateOverallScore(v.CompatibilityRating, v.RemuxClients, v.VideoCodec, v.BitDepth);
+                            return calculatedScore.Equals(targetScore, StringComparison.OrdinalIgnoreCase);
+                        }
+                        catch
+                        {
+                            return false;
+                        }
+                    }).ToList();
+                }
+
+                // Return just the IDs
+                var ids = allVideos.Select(v => v.Id).ToList();
+                return Ok(ids);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error getting video IDs");
+                return StatusCode(500, new { error = "Failed to get video IDs", message = ex.Message });
+            }
+        }
+
         [HttpGet("videos/filters")]
         public async Task<ActionResult<FilterOptions>> GetFilterOptions()
         {
@@ -968,7 +1306,20 @@ namespace Optimarr.Controllers
                     _logger.LogWarning("Configuration is not IConfigurationRoot, cannot reload. Changes may not take effect until restart.");
                 }
                 
-                return Ok(new { message = "Rating settings saved successfully. Changes will apply to newly scanned videos." });
+                // Recalculate compatibility for all existing videos
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await RecalculateCompatibilityForAllVideosAsync();
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Error recalculating compatibility after rating settings change");
+                    }
+                });
+
+                return Ok(new { message = "Rating settings saved successfully. Compatibility is being recalculated for all videos." });
             }
             catch (Exception ex)
             {
@@ -1247,7 +1598,20 @@ namespace Optimarr.Controllers
 
                 _logger.LogInformation("Compatibility overrides saved: {Count} overrides", overrides.Count);
 
-                return Ok(new { message = "Compatibility settings saved successfully. Changes will apply to newly analyzed videos." });
+                // Recalculate compatibility for all existing videos
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await RecalculateCompatibilityForAllVideosAsync();
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Error recalculating compatibility after compatibility settings change");
+                    }
+                });
+
+                return Ok(new { message = "Compatibility settings saved successfully. Compatibility is being recalculated for all videos." });
             }
             catch (Exception ex)
             {
@@ -1649,6 +2013,350 @@ namespace Optimarr.Controllers
             }
         }
 
+        [HttpPost("webhook/tdarr")]
+        public async Task<ActionResult> TdarrWebhook([FromBody] TdarrWebhookRequest request)
+        {
+            try
+            {
+                _logger.LogInformation("Received Tdarr webhook notification: Status={Status}, File={File}", 
+                    request?.Status, request?.File);
+
+                // Get file path from request (Tdarr may send it in different fields)
+                var filePath = request.GetFilePath();
+                
+                if (request == null || string.IsNullOrEmpty(filePath))
+                {
+                    _logger.LogWarning("Invalid Tdarr webhook request: missing file path. Request: {Request}", 
+                        System.Text.Json.JsonSerializer.Serialize(request));
+                    return BadRequest(new { error = "Invalid request: file path is required" });
+                }
+
+                // Only process successful transcodes
+                if (!string.IsNullOrEmpty(request.Status) && 
+                    !request.Status.Equals("Success", StringComparison.OrdinalIgnoreCase))
+                {
+                    _logger.LogInformation("Skipping Tdarr notification with status: {Status}", request.Status);
+                    return Ok(new { message = "Notification received but not processed (not a success status)" });
+                }
+
+                // Normalize the file path for comparison
+                var normalizedFilePath = NormalizePath(filePath);
+
+                // Find the video in the database by file path
+                var video = await _dbContext.VideoAnalyses
+                    .FirstOrDefaultAsync(v => NormalizePath(v.FilePath) == normalizedFilePath);
+
+                if (video == null)
+                {
+                    _logger.LogWarning("Video not found in database for Tdarr file: {File}", filePath);
+                    return NotFound(new { error = $"Video not found for file: {filePath}" });
+                }
+
+                // Check if file exists on disk
+                if (!System.IO.File.Exists(video.FilePath))
+                {
+                    _logger.LogWarning("Video file not found on disk: {FilePath}", video.FilePath);
+                    return BadRequest(new { error = "Video file not found on disk" });
+                }
+
+                _logger.LogInformation("Triggering rescan for video ID {Id} after Tdarr transcode: {FilePath}", 
+                    video.Id, video.FilePath);
+
+                // Trigger rescan in background
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        using var scope = _scopeFactory.CreateScope();
+                        var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                        var videoAnalyzer = scope.ServiceProvider.GetRequiredService<VideoAnalyzerService>();
+
+                        // Reload video from database to get latest state
+                        var videoToRescan = await dbContext.VideoAnalyses.FindAsync(video.Id);
+                        if (videoToRescan == null)
+                        {
+                            _logger.LogWarning("Video ID {Id} no longer exists in database", video.Id);
+                            return;
+                        }
+
+                        // Find external subtitles
+                        var externalSubtitlePaths = FindAllExternalSubtitles(videoToRescan.FilePath);
+
+                        // Re-analyze the video
+                        var (videoInfo, compatibilityResult) = videoAnalyzer.AnalyzeVideoStructured(
+                            videoToRescan.FilePath, 
+                            externalSubtitlePaths);
+
+                        if (videoInfo == null || compatibilityResult == null)
+                        {
+                            _logger.LogError("Failed to analyze video ID {Id} after Tdarr transcode", video.Id);
+                            return;
+                        }
+
+                        // Update video record
+                        videoToRescan.Container = videoInfo.Container;
+                        videoToRescan.VideoCodec = videoInfo.VideoCodec;
+                        videoToRescan.VideoCodecTag = videoInfo.VideoCodecTag;
+                        videoToRescan.IsCodecTagCorrect = videoInfo.IsCodecTagCorrect;
+                        videoToRescan.BitDepth = videoInfo.BitDepth;
+                        videoToRescan.Width = videoInfo.Width;
+                        videoToRescan.Height = videoInfo.Height;
+                        videoToRescan.FrameRate = videoInfo.FrameRate;
+                        videoToRescan.IsHDR = videoInfo.IsHDR;
+                        videoToRescan.HDRType = videoInfo.HDRType;
+                        videoToRescan.IsFastStart = videoInfo.IsFastStart;
+                        videoToRescan.AudioCodecs = string.Join(",", videoInfo.AudioTracks.Select(a => a.Codec).Distinct());
+                        videoToRescan.AudioTrackCount = videoInfo.AudioTracks.Count;
+                        videoToRescan.AudioTracksJson = System.Text.Json.JsonSerializer.Serialize(videoInfo.AudioTracks, new System.Text.Json.JsonSerializerOptions
+                        {
+                            PropertyNameCaseInsensitive = true
+                        });
+                        videoToRescan.SubtitleFormats = string.Join(",", videoInfo.SubtitleTracks.Select(s => 
+                            s.IsEmbedded ? s.Format : $"{s.Format} (External)").Distinct());
+                        videoToRescan.SubtitleTrackCount = videoInfo.SubtitleTracks.Count;
+                        videoToRescan.SubtitleTracksJson = System.Text.Json.JsonSerializer.Serialize(videoInfo.SubtitleTracks, new System.Text.Json.JsonSerializerOptions
+                        {
+                            PropertyNameCaseInsensitive = true
+                        });
+                        videoToRescan.CompatibilityRating = compatibilityResult.CompatibilityRating;
+                        videoToRescan.DirectPlayClients = compatibilityResult.ClientResults.Values.Count(r => r.Status == "Direct Play");
+                        videoToRescan.RemuxClients = compatibilityResult.ClientResults.Values.Count(r => r.Status == "Remux");
+                        videoToRescan.TranscodeClients = compatibilityResult.ClientResults.Values.Count(r => r.Status == "Transcode");
+                        videoToRescan.OverallScore = ParseScore(compatibilityResult.OverallScore);
+                        videoToRescan.Issues = System.Text.Json.JsonSerializer.Serialize(compatibilityResult.Issues);
+                        videoToRescan.Recommendations = System.Text.Json.JsonSerializer.Serialize(compatibilityResult.Recommendations);
+                        videoToRescan.ClientResults = System.Text.Json.JsonSerializer.Serialize(compatibilityResult.ClientResults);
+
+                        // Generate new report
+                        var reportGenerator = new ReportGenerator();
+                        videoToRescan.FullReport = reportGenerator.GenerateReport(videoInfo, compatibilityResult);
+
+                        videoToRescan.AnalyzedAt = DateTime.UtcNow;
+
+                        await dbContext.SaveChangesAsync();
+                        _logger.LogInformation("Successfully rescanned video ID {Id} after Tdarr transcode", video.Id);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Error rescanning video ID {Id} after Tdarr webhook", video.Id);
+                    }
+                });
+
+                return Ok(new { 
+                    message = "Tdarr notification received. Video rescan initiated.",
+                    videoId = video.Id,
+                    filePath = video.FilePath
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error processing Tdarr webhook");
+                return StatusCode(500, new { error = $"Failed to process webhook: {ex.Message}" });
+            }
+        }
+
+        // Helper method to normalize file paths for comparison
+        private string NormalizePath(string path)
+        {
+            if (string.IsNullOrEmpty(path))
+                return string.Empty;
+
+            // Normalize path separators and case
+            return System.IO.Path.GetFullPath(path)
+                .Replace('\\', '/')
+                .TrimEnd('/')
+                .ToLowerInvariant();
+        }
+
+        [HttpPost("videos/rescan")]
+        public async Task<ActionResult> RescanVideos([FromBody] RedownloadRequest request)
+        {
+            if (request.VideoIds == null || request.VideoIds.Count == 0)
+            {
+                return BadRequest(new { error = "No video IDs provided" });
+            }
+
+            _logger.LogInformation("Rescan requested for {Count} videos", request.VideoIds.Count);
+
+            var results = new List<RescanResult>();
+            var serviceProvider = HttpContext.RequestServices;
+            var videoAnalyzer = serviceProvider.GetRequiredService<VideoAnalyzerService>();
+
+            // Load all videos from database in one query
+            var videos = await _dbContext.VideoAnalyses
+                .Where(v => request.VideoIds.Contains(v.Id))
+                .ToListAsync();
+
+            // Process videos in parallel with controlled concurrency
+            const int maxConcurrency = 5; // Lower concurrency for rescan since it's CPU-intensive
+            var semaphore = new SemaphoreSlim(maxConcurrency, maxConcurrency);
+            var tasks = videos.Select(async video =>
+            {
+                await semaphore.WaitAsync();
+                try
+                {
+                    var result = new RescanResult
+                    {
+                        VideoId = video.Id,
+                        Success = false,
+                        Message = "Not processed"
+                    };
+
+                    try
+                    {
+                        if (string.IsNullOrEmpty(video.FilePath))
+                        {
+                            result.Message = "Video file path is empty";
+                            lock (results) { results.Add(result); }
+                            return;
+                        }
+
+                        if (!System.IO.File.Exists(video.FilePath))
+                        {
+                            result.Message = "Video file not found on disk";
+                            lock (results) { results.Add(result); }
+                            return;
+                        }
+
+                        _logger.LogInformation("Rescanning video ID {VideoId}: {FilePath}", video.Id, video.FilePath);
+
+                        // Find external subtitles
+                        var externalSubtitlePaths = FindAllExternalSubtitles(video.FilePath);
+
+                        // Analyze the video
+                        var (videoInfo, compatibilityResult) = await Task.Run(() => 
+                            videoAnalyzer.AnalyzeVideoStructured(video.FilePath, externalSubtitlePaths));
+
+                        if (videoInfo == null || compatibilityResult == null)
+                        {
+                            result.Message = "Video analysis returned null results";
+                            lock (results) { results.Add(result); }
+                            return;
+                        }
+
+                        // Check if media information is valid (not broken)
+                        bool isBroken = false;
+                        string? brokenReason = null;
+
+                        if (string.IsNullOrWhiteSpace(videoInfo.VideoCodec) && string.IsNullOrWhiteSpace(videoInfo.Container))
+                        {
+                            isBroken = true;
+                            brokenReason = "No video codec or container information found";
+                        }
+                        else if (videoInfo.Width == 0 || videoInfo.Height == 0)
+                        {
+                            isBroken = true;
+                            brokenReason = "Invalid video resolution (width or height is 0)";
+                        }
+                        else if (videoInfo.Duration <= 0)
+                        {
+                            isBroken = true;
+                            brokenReason = "Invalid duration (duration is 0 or negative)";
+                        }
+                        else if (videoInfo.FileSize == 0)
+                        {
+                            isBroken = true;
+                            brokenReason = "File size is 0 bytes";
+                        }
+
+                        // Update the existing video analysis record
+                        video.FileName = System.IO.Path.GetFileName(video.FilePath);
+                        video.FileSize = new System.IO.FileInfo(video.FilePath).Length;
+                        video.Duration = videoInfo.Duration;
+                        video.Container = videoInfo.Container;
+                        video.VideoCodec = videoInfo.VideoCodec;
+                        video.VideoCodecTag = videoInfo.VideoCodecTag;
+                        video.IsCodecTagCorrect = videoInfo.IsCodecTagCorrect;
+                        video.BitDepth = videoInfo.BitDepth;
+                        video.Width = videoInfo.Width;
+                        video.Height = videoInfo.Height;
+                        video.FrameRate = videoInfo.FrameRate;
+                        video.IsHDR = videoInfo.IsHDR;
+                        video.HDRType = videoInfo.HDRType ?? string.Empty;
+                        video.IsFastStart = videoInfo.IsFastStart;
+                        video.IsBroken = isBroken;
+                        video.BrokenReason = brokenReason;
+
+                        // Update audio tracks
+                        video.AudioCodecs = string.Join(",", videoInfo.AudioTracks.Select(t => t.Codec).Distinct());
+                        video.AudioTrackCount = videoInfo.AudioTracks.Count;
+                        var audioJsonOptions = new System.Text.Json.JsonSerializerOptions
+                        {
+                            PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase
+                        };
+                        video.AudioTracksJson = System.Text.Json.JsonSerializer.Serialize(videoInfo.AudioTracks, audioJsonOptions);
+
+                        // Update subtitle tracks
+                        var subtitleFormats = videoInfo.SubtitleTracks
+                            .Select(t => t.IsEmbedded ? t.Format : $"{t.Format} (External)").Distinct();
+                        video.SubtitleFormats = string.Join(",", subtitleFormats);
+                        video.SubtitleTrackCount = videoInfo.SubtitleTracks.Count;
+                        var subtitleJsonOptions = new System.Text.Json.JsonSerializerOptions
+                        {
+                            PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase
+                        };
+                        video.SubtitleTracksJson = System.Text.Json.JsonSerializer.Serialize(videoInfo.SubtitleTracks, subtitleJsonOptions);
+
+                        // Update compatibility results
+                        video.CompatibilityRating = compatibilityResult.CompatibilityRating;
+                        video.DirectPlayClients = compatibilityResult.ClientResults.Values.Count(r => r.Status == "Direct Play");
+                        video.RemuxClients = compatibilityResult.ClientResults.Values.Count(r => r.Status == "Remux");
+                        video.TranscodeClients = compatibilityResult.ClientResults.Values.Count(r => r.Status == "Transcode");
+
+                        // Update issues and recommendations
+                        video.Issues = System.Text.Json.JsonSerializer.Serialize(compatibilityResult.Issues);
+                        video.Recommendations = System.Text.Json.JsonSerializer.Serialize(compatibilityResult.Recommendations);
+                        video.ClientResults = System.Text.Json.JsonSerializer.Serialize(compatibilityResult.ClientResults);
+
+                        // Recalculate OverallScore
+                        var recalculatedScore = CalculateOverallScore(
+                            video.CompatibilityRating, 
+                            video.RemuxClients, 
+                            video.VideoCodec, 
+                            video.BitDepth);
+
+                        if (Enum.TryParse<CompatibilityScore>(recalculatedScore, true, out var parsedScore))
+                        {
+                            video.OverallScore = parsedScore;
+                        }
+                        else
+                        {
+                            video.OverallScore = CompatibilityScore.Unknown;
+                        }
+
+                        video.AnalyzedAt = DateTime.UtcNow;
+
+                        await _dbContext.SaveChangesAsync();
+                        result.Success = true;
+                        result.Message = "Video rescanned successfully";
+                        _logger.LogInformation("Successfully rescanned video ID {VideoId}", video.Id);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Error rescanning video {VideoId}", video.Id);
+                        result.Message = $"Error: {ex.Message}";
+                    }
+
+                    lock (results) { results.Add(result); }
+                }
+                finally
+                {
+                    semaphore.Release();
+                }
+            });
+
+            await Task.WhenAll(tasks);
+
+            var successCount = results.Count(r => r.Success);
+            return Ok(new
+            {
+                total = request.VideoIds.Count,
+                success = successCount,
+                failed = request.VideoIds.Count - successCount,
+                results = results
+            });
+        }
+
         [HttpPost("videos/rescan-broken")]
         public async Task<ActionResult<object>> RescanAllBrokenVideos()
         {
@@ -1908,6 +2616,132 @@ namespace Optimarr.Controllers
             }
         }
 
+        private async Task<bool> ProcessSonarrRedownload(
+            SonarrEpisode episode, 
+            string filePath, 
+            bool fileExists, 
+            SonarrService sonarrService, 
+            VideoAnalysis video, 
+            RedownloadResult result)
+        {
+            try
+            {
+                // Delete file from disk if it exists
+                if (fileExists)
+                {
+                    try
+                    {
+                        System.IO.File.Delete(filePath);
+                        _logger.LogInformation("Deleted file from disk: {FilePath}", filePath);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Failed to delete file from disk: {FilePath}", filePath);
+                    }
+                }
+
+                // Delete from Sonarr if episode file ID exists
+                if (episode.EpisodeFileId.HasValue)
+                {
+                    var deleted = await sonarrService.DeleteEpisodeFile(episode.EpisodeFileId.Value);
+                    if (deleted)
+                    {
+                        _logger.LogInformation("Deleted episode file from Sonarr: EpisodeFileId={EpisodeFileId}", 
+                            episode.EpisodeFileId.Value);
+                    }
+                }
+
+                // Trigger search
+                var searchTriggered = await sonarrService.TriggerEpisodeSearch(episode.Id);
+                if (searchTriggered)
+                {
+                    // Mark video as Processing instead of removing it
+                    video.ProcessingStatus = ProcessingStatus.Processing;
+                    video.ProcessingStartedAt = DateTime.UtcNow;
+                    _logger.LogInformation("Marked video {VideoId} as Processing (will be rescanned after 24h)", video.Id);
+                    
+                    result.Success = true;
+                    result.Message = "Redownload triggered in Sonarr";
+                    result.Service = "Sonarr";
+                }
+                else
+                {
+                    result.Message = "Failed to trigger Sonarr search";
+                }
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error processing Sonarr redownload for episode {EpisodeId}", episode.Id);
+                result.Message = $"Error: {ex.Message}";
+                return false;
+            }
+        }
+
+        private async Task<bool> ProcessRadarrRedownload(
+            RadarrMovie movie, 
+            string filePath, 
+            bool fileExists, 
+            RadarrService radarrService, 
+            VideoAnalysis video, 
+            RedownloadResult result)
+        {
+            try
+            {
+                // Delete file from disk if it exists
+                if (fileExists)
+                {
+                    try
+                    {
+                        System.IO.File.Delete(filePath);
+                        _logger.LogInformation("Deleted file from disk: {FilePath}", filePath);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Failed to delete file from disk: {FilePath}", filePath);
+                    }
+                }
+
+                // Delete from Radarr
+                if (movie.MovieFile != null)
+                {
+                    var deleted = await radarrService.DeleteMovieFile(movie.MovieFile.Id);
+                    if (deleted)
+                    {
+                        _logger.LogInformation("Deleted movie file from Radarr: MovieFileId={MovieFileId}", 
+                            movie.MovieFile.Id);
+                    }
+                }
+
+                // Trigger search
+                var searchTriggered = await radarrService.TriggerMovieSearch(movie.Id);
+                if (searchTriggered)
+                {
+                    // Mark video as Processing instead of removing it
+                    video.ProcessingStatus = ProcessingStatus.Processing;
+                    video.ProcessingStartedAt = DateTime.UtcNow;
+                    _logger.LogInformation("Marked video {VideoId} as Processing (will be rescanned after 24h)", video.Id);
+                    
+                    result.Success = true;
+                    result.Message = "Redownload triggered in Radarr";
+                    result.Service = "Radarr";
+                }
+                else
+                {
+                    result.Message = "Failed to trigger Radarr search";
+                }
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error processing Radarr redownload for movie {MovieId}", movie.Id);
+                result.Message = $"Error: {ex.Message}";
+                return false;
+            }
+        }
+
         [HttpPost("videos/redownload")]
         public async Task<ActionResult> RedownloadVideos([FromBody] RedownloadRequest request)
         {
@@ -1922,152 +2756,137 @@ namespace Optimarr.Controllers
             var sonarrService = HttpContext.RequestServices.GetService<SonarrService>();
             var radarrService = HttpContext.RequestServices.GetService<RadarrService>();
 
-            foreach (var videoId in request.VideoIds)
-            {
-                var result = new RedownloadResult
-                {
-                    VideoId = videoId,
-                    Success = false,
-                    Message = "Not processed"
-                };
+            // Load all videos from database in one query
+            var videos = await _dbContext.VideoAnalyses
+                .Where(v => request.VideoIds.Contains(v.Id))
+                .ToListAsync();
 
+            // Process videos in parallel with controlled concurrency
+            const int maxConcurrency = 10;
+            var semaphore = new SemaphoreSlim(maxConcurrency, maxConcurrency);
+            var tasks = videos.Select(async video =>
+            {
+                await semaphore.WaitAsync();
                 try
                 {
-                    var video = await _dbContext.VideoAnalyses.FindAsync(videoId);
-                    if (video == null)
+                    var result = new RedownloadResult
                     {
-                        result.Message = "Video not found in database";
-                        results.Add(result);
-                        continue;
-                    }
+                        VideoId = video.Id,
+                        Success = false,
+                        Message = "Not processed"
+                    };
 
-                    if (string.IsNullOrEmpty(video.FilePath))
+                    try
                     {
-                        result.Message = "Video file path is empty";
-                        results.Add(result);
-                        continue;
-                    }
-
-                    var filePath = video.FilePath;
-                    var fileExists = System.IO.File.Exists(filePath);
-
-                    // Try to find in Sonarr first
-                    if (sonarrService != null && sonarrService.IsEnabled && sonarrService.IsConnected)
-                    {
-                        var episode = await sonarrService.FindEpisodeByPath(filePath);
-                        if (episode != null)
+                        if (string.IsNullOrEmpty(video.FilePath))
                         {
-                            _logger.LogInformation("Found video in Sonarr: EpisodeId={EpisodeId}, FilePath={FilePath}", 
-                                episode.Id, filePath);
+                            result.Message = "Video file path is empty";
+                            lock (results) { results.Add(result); }
+                            return;
+                        }
 
-                            // Delete file from disk if it exists
-                            if (fileExists)
+                        var filePath = video.FilePath;
+                        var fileExists = System.IO.File.Exists(filePath);
+                        bool processed = false;
+
+                        // Strategy 1: Use stored Servarr matching data if available (fast path)
+                        if (video.ServarrType == "Sonarr" && video.SonarrEpisodeId.HasValue)
+                        {
+                            if (sonarrService != null && sonarrService.IsEnabled && sonarrService.IsConnected)
                             {
-                                try
+                                // Get episode directly by ID (fast - single API call)
+                                var episode = await sonarrService.GetEpisode(video.SonarrEpisodeId.Value);
+                                if (episode != null)
                                 {
-                                    System.IO.File.Delete(filePath);
-                                    _logger.LogInformation("Deleted file from disk: {FilePath}", filePath);
+                                    _logger.LogInformation("Using stored Sonarr match: EpisodeId={EpisodeId}, FilePath={FilePath}", 
+                                        episode.Id, filePath);
+                                    
+                                    processed = await ProcessSonarrRedownload(episode, filePath, fileExists, sonarrService, video, result);
+                                    if (processed)
+                                    {
+                                        lock (results) { results.Add(result); }
+                                        return;
+                                    }
                                 }
-                                catch (Exception ex)
+                            }
+                        }
+                        else if (video.ServarrType == "Radarr" && video.RadarrMovieId.HasValue)
+                        {
+                            if (radarrService != null && radarrService.IsEnabled && radarrService.IsConnected)
+                            {
+                                // Get movie directly by ID (fast - single API call)
+                                var movie = await radarrService.GetMovie(video.RadarrMovieId.Value);
+                                if (movie != null && movie.MovieFile != null)
                                 {
-                                    _logger.LogWarning(ex, "Failed to delete file from disk: {FilePath}", filePath);
+                                    _logger.LogInformation("Using stored Radarr match: MovieId={MovieId}, FilePath={FilePath}", 
+                                        movie.Id, filePath);
+                                    
+                                    processed = await ProcessRadarrRedownload(movie, filePath, fileExists, radarrService, video, result);
+                                    if (processed)
+                                    {
+                                        lock (results) { results.Add(result); }
+                                        return;
+                                    }
                                 }
                             }
+                        }
 
-                            // Delete from Sonarr if episode file ID exists
-                            if (episode.EpisodeFileId.HasValue)
+                        // Strategy 2: Find by path search if no stored match (slower, but handles unmatched videos)
+                        if (!processed && sonarrService != null && sonarrService.IsEnabled && sonarrService.IsConnected)
+                        {
+                            var episode = await sonarrService.FindEpisodeByPath(filePath);
+                            if (episode != null)
                             {
-                                var deleted = await sonarrService.DeleteEpisodeFile(episode.EpisodeFileId.Value);
-                                if (deleted)
+                                _logger.LogInformation("Found Sonarr match by path search: EpisodeId={EpisodeId}, FilePath={FilePath}", 
+                                    episode.Id, filePath);
+                                
+                                processed = await ProcessSonarrRedownload(episode, filePath, fileExists, sonarrService, video, result);
+                                if (processed)
                                 {
-                                    _logger.LogInformation("Deleted episode file from Sonarr: EpisodeFileId={EpisodeFileId}", 
-                                        episode.EpisodeFileId.Value);
+                                    lock (results) { results.Add(result); }
+                                    return;
                                 }
                             }
+                        }
 
-                            // Trigger search
-                            var searchTriggered = await sonarrService.TriggerEpisodeSearch(episode.Id);
-                            if (searchTriggered)
+                        if (!processed && radarrService != null && radarrService.IsEnabled && radarrService.IsConnected)
+                        {
+                            var movie = await radarrService.FindMovieByPath(filePath);
+                            if (movie != null && movie.MovieFile != null)
                             {
-                                result.Success = true;
-                                result.Message = "Redownload triggered in Sonarr";
-                                result.Service = "Sonarr";
+                                _logger.LogInformation("Found Radarr match by path search: MovieId={MovieId}, FilePath={FilePath}", 
+                                    movie.Id, filePath);
+                                
+                                processed = await ProcessRadarrRedownload(movie, filePath, fileExists, radarrService, video, result);
+                                if (processed)
+                                {
+                                    lock (results) { results.Add(result); }
+                                    return;
+                                }
                             }
-                            else
-                            {
-                                result.Message = "Failed to trigger Sonarr search";
-                            }
+                        }
 
-                            // Remove from database
-                            _dbContext.VideoAnalyses.Remove(video);
-                            results.Add(result);
-                            continue;
+                        // Not found in Sonarr or Radarr
+                        if (!processed)
+                        {
+                            result.Message = "Video not found in Sonarr or Radarr";
+                            lock (results) { results.Add(result); }
                         }
                     }
-
-                    // Try Radarr
-                    if (radarrService != null && radarrService.IsEnabled && radarrService.IsConnected)
+                    catch (Exception ex)
                     {
-                        var movie = await radarrService.FindMovieByPath(filePath);
-                        if (movie != null && movie.MovieFile != null)
-                        {
-                            _logger.LogInformation("Found video in Radarr: MovieId={MovieId}, FilePath={FilePath}", 
-                                movie.Id, filePath);
-
-                            // Delete file from disk if it exists
-                            if (fileExists)
-                            {
-                                try
-                                {
-                                    System.IO.File.Delete(filePath);
-                                    _logger.LogInformation("Deleted file from disk: {FilePath}", filePath);
-                                }
-                                catch (Exception ex)
-                                {
-                                    _logger.LogWarning(ex, "Failed to delete file from disk: {FilePath}", filePath);
-                                }
-                            }
-
-                            // Delete from Radarr
-                            var deleted = await radarrService.DeleteMovieFile(movie.MovieFile.Id);
-                            if (deleted)
-                            {
-                                _logger.LogInformation("Deleted movie file from Radarr: MovieFileId={MovieFileId}", 
-                                    movie.MovieFile.Id);
-                            }
-
-                            // Trigger search
-                            var searchTriggered = await radarrService.TriggerMovieSearch(movie.Id);
-                            if (searchTriggered)
-                            {
-                                result.Success = true;
-                                result.Message = "Redownload triggered in Radarr";
-                                result.Service = "Radarr";
-                            }
-                            else
-                            {
-                                result.Message = "Failed to trigger Radarr search";
-                            }
-
-                            // Remove from database
-                            _dbContext.VideoAnalyses.Remove(video);
-                            results.Add(result);
-                            continue;
-                        }
+                        _logger.LogError(ex, "Error processing redownload for video {VideoId}", video.Id);
+                        result.Message = $"Error: {ex.Message}";
+                        lock (results) { results.Add(result); }
                     }
-
-                    // Not found in Sonarr or Radarr
-                    result.Message = "Video not found in Sonarr or Radarr";
-                    results.Add(result);
                 }
-                catch (Exception ex)
+                finally
                 {
-                    _logger.LogError(ex, "Error processing redownload for video {VideoId}", videoId);
-                    result.Message = $"Error: {ex.Message}";
-                    results.Add(result);
+                    semaphore.Release();
                 }
-            }
+            });
 
+            await Task.WhenAll(tasks);
             await _dbContext.SaveChangesAsync();
 
             var successCount = results.Count(r => r.Success);
@@ -2106,6 +2925,26 @@ namespace Optimarr.Controllers
         public bool Success { get; set; }
         public string Message { get; set; } = string.Empty;
         public string? Service { get; set; }
+    }
+
+    public class RescanResult
+    {
+        public int VideoId { get; set; }
+        public bool Success { get; set; }
+        public string Message { get; set; } = string.Empty;
+    }
+
+    public class TdarrWebhookRequest
+    {
+        public string? Status { get; set; }
+        public string? File { get; set; }
+        public string? FilePath { get; set; }
+        public string? InputFile { get; set; }
+        // Tdarr may send file path in different fields, so we'll check multiple
+        public string? GetFilePath()
+        {
+            return File ?? FilePath ?? InputFile;
+        }
     }
 
     public class LibraryPathInfo

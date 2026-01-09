@@ -15,6 +15,7 @@ namespace Optimarr.Controllers
     {
         private readonly AppDbContext _dbContext;
         private readonly JellyfinService _jellyfinService;
+        private readonly VideoAnalyzerService _videoAnalyzer;
         private readonly ILogger<PlaybackController> _logger;
         private readonly IConfiguration _configuration;
         private readonly IWebHostEnvironment _environment;
@@ -22,15 +23,159 @@ namespace Optimarr.Controllers
         public PlaybackController(
             AppDbContext dbContext,
             JellyfinService jellyfinService,
+            VideoAnalyzerService videoAnalyzer,
             ILogger<PlaybackController> logger,
             IConfiguration configuration,
             IWebHostEnvironment environment)
         {
             _dbContext = dbContext;
             _jellyfinService = jellyfinService;
+            _videoAnalyzer = videoAnalyzer;
             _logger = logger;
             _configuration = configuration;
             _environment = environment;
+        }
+
+        // Reconstruct VideoInfo from VideoAnalysis database record
+        private VideoInfo ReconstructVideoInfo(VideoAnalysis video)
+        {
+            var videoInfo = new VideoInfo
+            {
+                FilePath = video.FilePath,
+                Container = video.Container,
+                VideoCodec = video.VideoCodec,
+                VideoCodecTag = video.VideoCodecTag,
+                IsCodecTagCorrect = video.IsCodecTagCorrect,
+                BitDepth = video.BitDepth,
+                Width = video.Width,
+                Height = video.Height,
+                FrameRate = video.FrameRate,
+                IsHDR = video.IsHDR,
+                HDRType = video.HDRType,
+                IsFastStart = video.IsFastStart,
+                FileSize = video.FileSize,
+                Duration = video.Duration
+            };
+
+            // Reconstruct audio tracks from JSON
+            if (!string.IsNullOrEmpty(video.AudioTracksJson))
+            {
+                try
+                {
+                    videoInfo.AudioTracks = System.Text.Json.JsonSerializer.Deserialize<List<AudioTrack>>(
+                        video.AudioTracksJson,
+                        new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true }
+                    ) ?? new List<AudioTrack>();
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to deserialize audio tracks for video ID {Id}", video.Id);
+                    videoInfo.AudioTracks = new List<AudioTrack>();
+                }
+            }
+
+            // Reconstruct subtitle tracks from JSON
+            if (!string.IsNullOrEmpty(video.SubtitleTracksJson))
+            {
+                try
+                {
+                    videoInfo.SubtitleTracks = System.Text.Json.JsonSerializer.Deserialize<List<SubtitleTrack>>(
+                        video.SubtitleTracksJson,
+                        new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true }
+                    ) ?? new List<SubtitleTrack>();
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to deserialize subtitle tracks for video ID {Id}", video.Id);
+                    videoInfo.SubtitleTracks = new List<SubtitleTrack>();
+                }
+            }
+
+            return videoInfo;
+        }
+
+        // Recalculate compatibility for all videos in the database
+        private async Task RecalculateCompatibilityForAllVideosAsync()
+        {
+            _logger.LogInformation("Starting compatibility recalculation for all videos");
+
+            try
+            {
+                // Load all videos from database
+                var videos = await _dbContext.VideoAnalyses
+                    .Where(v => !v.IsBroken) // Skip broken videos
+                    .ToListAsync();
+
+                _logger.LogInformation("Recalculating compatibility for {Count} videos", videos.Count);
+
+                var updatedCount = 0;
+                var errorCount = 0;
+
+                // Process videos in batches to avoid memory issues
+                const int batchSize = 100;
+                for (int i = 0; i < videos.Count; i += batchSize)
+                {
+                    var batch = videos.Skip(i).Take(batchSize).ToList();
+                    
+                    foreach (var video in batch)
+                    {
+                        try
+                        {
+                            // Reconstruct VideoInfo from database record
+                            var videoInfo = ReconstructVideoInfo(video);
+
+                            // Recalculate compatibility using current settings
+                            var compatibilityResult = _videoAnalyzer.RecalculateCompatibility(videoInfo);
+
+                            // Update video record with new compatibility data
+                            video.CompatibilityRating = compatibilityResult.CompatibilityRating;
+                            video.DirectPlayClients = compatibilityResult.ClientResults.Values.Count(r => r.Status == "Direct Play");
+                            video.RemuxClients = compatibilityResult.ClientResults.Values.Count(r => r.Status == "Remux");
+                            video.TranscodeClients = compatibilityResult.ClientResults.Values.Count(r => r.Status == "Transcode");
+                            video.OverallScore = ParseScore(compatibilityResult.OverallScore);
+                            video.Issues = System.Text.Json.JsonSerializer.Serialize(compatibilityResult.Issues);
+                            video.Recommendations = System.Text.Json.JsonSerializer.Serialize(compatibilityResult.Recommendations);
+                            video.ClientResults = System.Text.Json.JsonSerializer.Serialize(compatibilityResult.ClientResults);
+
+                            // Generate new report
+                            var reportGenerator = new ReportGenerator();
+                            video.FullReport = reportGenerator.GenerateReport(videoInfo, compatibilityResult);
+
+                            updatedCount++;
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(ex, "Error recalculating compatibility for video ID {Id}", video.Id);
+                            errorCount++;
+                        }
+                    }
+
+                    // Save batch
+                    await _dbContext.SaveChangesAsync();
+                    _logger.LogInformation("Processed batch: {Processed}/{Total} videos updated, {Errors} errors", 
+                        updatedCount, videos.Count, errorCount);
+                }
+
+                _logger.LogInformation("Compatibility recalculation completed: {Updated} updated, {Errors} errors", 
+                    updatedCount, errorCount);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error during compatibility recalculation");
+                throw;
+            }
+        }
+
+        // Helper to parse CompatibilityScore enum from string
+        private CompatibilityScore ParseScore(string score)
+        {
+            return score switch
+            {
+                "Optimal" => CompatibilityScore.Optimal,
+                "Good" => CompatibilityScore.Good,
+                "Poor" => CompatibilityScore.Poor,
+                _ => CompatibilityScore.Unknown
+            };
         }
 
         [HttpGet("status")]
@@ -699,7 +844,20 @@ namespace Optimarr.Controllers
                     request.Clients?.Count(c => c.Value) ?? 0,
                     allClients.Count - (request.Clients?.Count(c => c.Value) ?? 0));
 
-                return Ok(new { message = "Client settings saved successfully. Changes will apply to newly analyzed videos." });
+                // Recalculate compatibility for all existing videos
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await RecalculateCompatibilityForAllVideosAsync();
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Error recalculating compatibility after client settings change");
+                    }
+                });
+
+                return Ok(new { message = "Client settings saved successfully. Compatibility is being recalculated for all videos." });
             }
             catch (Exception ex)
             {

@@ -100,14 +100,20 @@ export async function loadBrowseMedia() {
                     servarrIcons = '<span class="servarr-icon radarr-icon" title="Found in Radarr: ' + escapeHtml(video.radarrMovieTitle || 'Unknown Movie') + (video.radarrYear ? ' (' + video.radarrYear + ')' : '') + '">🎬</span>';
                 }
                 
+                // Processing status badge
+                const processingBadge = video.processingStatus === 'Processing' 
+                    ? '<span class="processing-badge" title="Video is being redownloaded, will be rescanned after 24 hours">⏳ Processing</span>' 
+                    : '';
+                
                 return `
-                    <div class="media-card ${video.isBroken ? 'broken-media' : ''}" data-video-id="${video.id}">
+                    <div class="media-card ${video.isBroken ? 'broken-media' : ''} ${video.processingStatus === 'Processing' ? 'processing-media' : ''}" data-video-id="${video.id}">
                         <div class="media-card-checkbox" onclick="event.stopPropagation();">
                             <input type="checkbox" class="browse-video-checkbox" value="${video.id}" onchange="updateBrowseSelection()">
                         </div>
                         <div class="media-card-content" onclick="showMediaInfo(${video.id})">
                         <div class="media-card-header">
                             ${servarrIcons}
+                            ${processingBadge}
                             ${video.isBroken ? '<span class="broken-badge" title="Broken or unreadable media file">⚠️ Broken</span>' : `<span class="rating-badge rating-${rating}">${rating}/11</span>`}
                             ${video.isHDR ? '<span class="hdr-badge">HDR</span>' : '<span class="sdr-badge">SDR</span>'}
                             ${audioType !== 'Unknown' ? `<span class="audio-badge audio-${audioType.toLowerCase()}">${audioType}</span>` : ''}
@@ -363,11 +369,13 @@ export function updateBrowseSelection() {
     const countSpan = document.getElementById('selectedCount');
     const toolbar = document.querySelector('.browse-selection-toolbar');
     const redownloadBtn = document.getElementById('redownloadSelectedBtn');
+    const rescanBtn = document.getElementById('rescanSelectedBtn');
     const selectAllCheckbox = document.getElementById('selectAllBrowse');
     
     if (countSpan) countSpan.textContent = `${count} selected`;
     if (toolbar) toolbar.style.display = count > 0 ? 'block' : 'none';
     if (redownloadBtn) redownloadBtn.disabled = count === 0;
+    if (rescanBtn) rescanBtn.disabled = count === 0;
     if (selectAllCheckbox) {
         const allCheckboxes = document.querySelectorAll('.browse-video-checkbox');
         selectAllCheckbox.checked = allCheckboxes.length > 0 && allCheckboxes.length === checkboxes.length;
@@ -393,6 +401,71 @@ export function toggleSelectAllBrowse() {
     updateBrowseSelection();
 }
 
+export async function selectAllFromAllPages() {
+    try {
+        // Get current filter values
+        const libraryId = document.getElementById('browseLibraryFilter')?.value || '';
+        const codec = document.getElementById('browseCodecFilter')?.value || '';
+        const container = document.getElementById('browseContainerFilter')?.value || '';
+        const score = document.getElementById('browseScoreFilter')?.value || '';
+        const servarrFilter = document.getElementById('browseServarrFilter')?.value || '';
+        const search = document.getElementById('browseSearch')?.value || '';
+        const isBroken = document.getElementById('browseBrokenFilter')?.checked || false;
+        
+        // Build query parameters
+        const params = new URLSearchParams();
+        if (libraryId) params.append('libraryPathId', libraryId);
+        if (codec) params.append('codec', codec);
+        if (container) params.append('container', container);
+        if (score) params.append('score', score);
+        if (servarrFilter) params.append('servarrFilter', servarrFilter);
+        if (search) params.append('search', search);
+        if (isBroken) params.append('isBroken', 'true');
+        
+        // Fetch all matching video IDs
+        const response = await fetch(`/api/library/videos/ids?${params}`);
+        if (!response.ok) {
+            throw new Error(`Failed to fetch video IDs: ${response.status}`);
+        }
+        
+        const allIds = await response.json();
+        
+        if (!Array.isArray(allIds) || allIds.length === 0) {
+            alert('No videos found matching the current filters.');
+            return;
+        }
+        
+        // Add all IDs to selection
+        allIds.forEach(id => selectedVideoIds.add(id));
+        
+        // Update checkboxes on current page
+        const checkboxes = document.querySelectorAll('.browse-video-checkbox');
+        checkboxes.forEach(cb => {
+            const videoId = parseInt(cb.value);
+            if (selectedVideoIds.has(videoId)) {
+                cb.checked = true;
+            }
+        });
+        
+        // Update UI
+        updateBrowseSelection();
+        
+        // Show confirmation
+        const countSpan = document.getElementById('selectedCount');
+        if (countSpan) {
+            // Temporarily show a message
+            const originalText = countSpan.textContent;
+            countSpan.textContent = `${allIds.length} selected (all pages)`;
+            setTimeout(() => {
+                countSpan.textContent = originalText;
+            }, 2000);
+        }
+    } catch (error) {
+        console.error('Error selecting all from all pages:', error);
+        alert(`Error selecting all videos: ${error.message}`);
+    }
+}
+
 export function clearBrowseSelection() {
     selectedVideoIds.clear();
     const checkboxes = document.querySelectorAll('.browse-video-checkbox');
@@ -409,7 +482,7 @@ export async function redownloadSelected() {
     }
     
     const count = selectedVideoIds.size;
-    if (!confirm(`Are you sure you want to redownload ${count} video(s)?\n\nThis will:\n- Delete the file(s) from disk\n- Remove them from Sonarr/Radarr\n- Trigger a new download\n- Remove them from the database`)) {
+    if (!confirm(`Are you sure you want to redownload ${count} video(s)?\n\nThis will:\n- Delete the file(s) from disk\n- Remove them from Sonarr/Radarr\n- Trigger a new download\n- Mark them as Processing (will be rescanned after 24h)`)) {
         return;
     }
     
@@ -449,6 +522,53 @@ export async function redownloadSelected() {
     }
 }
 
+export async function rescanSelected() {
+    if (selectedVideoIds.size === 0) {
+        alert('No videos selected');
+        return;
+    }
+    
+    const count = selectedVideoIds.size;
+    if (!confirm(`Are you sure you want to rescan ${count} video(s)?\n\nThis will:\n- Re-analyze the video file(s)\n- Update compatibility information\n- This may take a while for large files`)) {
+        return;
+    }
+    
+    const rescanBtn = document.getElementById('rescanSelectedBtn');
+    if (rescanBtn) {
+        rescanBtn.disabled = true;
+        rescanBtn.textContent = 'Processing...';
+    }
+    
+    try {
+        const response = await fetch('/api/library/videos/rescan', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ videoIds: Array.from(selectedVideoIds) })
+        });
+        
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.error || 'Failed to rescan videos');
+        }
+        
+        const result = await response.json();
+        
+        alert(`Rescan completed!\n\nTotal: ${result.total}\nSuccess: ${result.success}\nFailed: ${result.failed}`);
+        
+        // Clear selection and reload
+        clearBrowseSelection();
+        loadBrowseMedia();
+    } catch (error) {
+        console.error('Error rescanning videos:', error);
+        alert(`Error rescanning videos: ${error.message}`);
+    } finally {
+        if (rescanBtn) {
+            rescanBtn.disabled = false;
+            rescanBtn.textContent = 'Rescan Selected';
+        }
+    }
+}
+
 // Export to window for onclick handlers
 window.loadBrowseMedia = loadBrowseMedia;
 window.browseCurrentPage = browseCurrentPage;
@@ -457,5 +577,7 @@ window.updateBrowseSelection = updateBrowseSelection;
 window.toggleSelectAllBrowse = toggleSelectAllBrowse;
 window.clearBrowseSelection = clearBrowseSelection;
 window.redownloadSelected = redownloadSelected;
+window.rescanSelected = rescanSelected;
 window.setBrowsePage = setBrowsePage;
+window.selectAllFromAllPages = selectAllFromAllPages;
 

@@ -1,7 +1,7 @@
 // Main Application Entry Point
 import { initNavigation } from './navigation.js';
 import { loadDashboard } from './dashboard.js';
-import { loadKnownLibraries, loadRecentScans, startScanPolling, reconnectToRunningScans } from './library.js';
+import { loadKnownLibraries, loadRecentScans, startScanPolling, reconnectToRunningScans, startProcessingCountPolling, loadProcessingVideos } from './library.js';
 import { loadBrowseFilterOptions, loadBrowseMedia, setupBrowseEventListeners } from './browse.js';
 import { loadRatingSettings, loadCompatibilitySettings, saveSettings, loadJellyfinSettings, loadSonarrSettings, loadRadarrSettings, loadSonarrPathMappings, loadRadarrPathMappings } from './settings.js';
 import { loadServarrStatus, checkActiveMatches } from './servarr.js';
@@ -138,6 +138,9 @@ document.addEventListener('DOMContentLoaded', function() {
     
     // Reconnect to any running scans (survives page reload)
     reconnectToRunningScans();
+    
+    // Start polling for processing count
+    startProcessingCountPolling();
     
     // Check if browse tab is active and load media
     const activeTab = document.querySelector('.nav-item.active');

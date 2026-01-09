@@ -198,6 +198,12 @@ namespace Optimarr.Services
             return AnalyzeVideoInternal(videoPath, subtitlePaths);
         }
 
+        // Public method to recalculate compatibility from existing VideoInfo (without re-analyzing the file)
+        public CompatibilityResult RecalculateCompatibility(VideoInfo videoInfo)
+        {
+            return AnalyzeCompatibility(videoInfo);
+        }
+
         private (VideoInfo VideoInfo, CompatibilityResult CompatibilityResult) AnalyzeVideoInternal(string videoPath, List<string>? subtitlePaths = null)
         {
             _logger?.LogInformation(">>> AnalyzeVideoInternal START: {VideoPath}", videoPath);

@@ -44,6 +44,7 @@
                 <a href="#library" class="nav-item" data-tab="library">
                     <span class="nav-icon">📁</span>
                     <span class="nav-text">Library</span>
+                    <span class="nav-badge" id="libraryProcessingBadge" style="display: none;">0</span>
                 </a>
                 <a href="#playback" class="nav-item" data-tab="playback">
                     <span class="nav-icon">▶️</span>
@@ -207,9 +208,15 @@
                     <div style="display: flex; gap: 1rem; align-items: center; flex-wrap: wrap;">
                         <label class="checkbox-label" style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
                             <input type="checkbox" id="selectAllBrowse" onchange="toggleSelectAllBrowse()">
-                            <span>Select All</span>
+                            <span>Select All (Current Page)</span>
                         </label>
+                        <button type="button" class="btn btn-secondary btn-sm" onclick="selectAllFromAllPages()" title="Select all videos matching current filters from all pages">
+                            Select All from All Pages
+                        </button>
                         <span id="selectedCount" style="color: var(--text-secondary); font-size: 0.875rem;">0 selected</span>
+                        <button type="button" class="btn btn-primary" onclick="rescanSelected()" id="rescanSelectedBtn" disabled>
+                            Rescan Selected
+                        </button>
                         <button type="button" class="btn btn-primary" onclick="redownloadSelected()" id="redownloadSelectedBtn" disabled>
                             Redownload Selected
                         </button>
@@ -361,6 +368,19 @@
                     <div class="box-content">
                         <div id="knownLibraries" class="libraries-grid">
                             <div class="loading-placeholder">Loading libraries...</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Processing Videos (Redownloading) -->
+                <div class="content-box">
+                    <div class="box-header">
+                        <h3>Redownloading Videos</h3>
+                        <small style="color: var(--text-secondary); font-weight: normal;">Videos currently being redownloaded will be automatically rescanned after 24 hours</small>
+                    </div>
+                    <div class="box-content">
+                        <div id="processingVideos">
+                            <div class="loading-placeholder">Loading processing videos...</div>
                         </div>
                     </div>
                 </div>

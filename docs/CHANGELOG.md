@@ -8,6 +8,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.1.4] - 2025-01-09
+
+### Fixed
+- **ProcessingStatus Migration**: Fixed database error "no such column: v.ProcessingStartedAt" by adding automatic migration detection and execution for ProcessingStatus fields
+  - Added `CheckIfProcessingStatusMigrationNeededAsync()` method to detect missing `ProcessingStatus` and `ProcessingStartedAt` columns
+  - Added `ApplyProcessingStatusMigrationAsync()` method to execute `AddProcessingStatusFields.sql` migration
+  - Migration service now checks for ProcessingStatus migration after Servarr migration
+  - Refactored common SQL execution logic into `ExecuteSqlMigrationAsync()` for code reuse
+  - Added embedded SQL fallback for ProcessingStatus migration
+  - Migration executes automatically on startup when columns are missing
+
+#### Technical Details
+- Updated `DatabaseMigrationService` to support multiple sequential migrations
+- ProcessingStatus migration is detected and applied automatically if columns are missing
+- Migration verification ensures columns are created successfully
+- Both Servarr and ProcessingStatus migrations can run in sequence if needed
+
+#### Database Impact
+- **Migration Required**: Yes - ProcessingStatus migration will run automatically on first startup after update if columns are missing
+- **Backward Compatible**: Yes - Existing databases will be migrated automatically
+- **Migration Script**: `Data/Migrations/AddProcessingStatusFields.sql`
+
+---
+
 ## [1.1.3] - 2025-01-09
 
 ### Fixed

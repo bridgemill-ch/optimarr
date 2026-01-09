@@ -223,6 +223,7 @@ try
     // Register background services
     builder.Services.AddHostedService<DatabaseMigrationService>();
     builder.Services.AddHostedService<PlaybackSyncService>();
+    builder.Services.AddHostedService<ProcessingRescanService>();
 
     // CORS for local development
     builder.Services.AddCors(options =>

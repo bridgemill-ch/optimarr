@@ -49,6 +49,9 @@ namespace Optimarr.Models
         public bool IsBroken { get; set; } = false; // True if media information cannot be read or file is corrupted
         public string? BrokenReason { get; set; } // Reason why the file is marked as broken
         
+        public ProcessingStatus ProcessingStatus { get; set; } = ProcessingStatus.None; // Processing state for redownloaded videos
+        public DateTime? ProcessingStartedAt { get; set; } // When the video was marked as processing (for 24h rescan)
+        
         public DateTime AnalyzedAt { get; set; }
         
         public int? LibraryScanId { get; set; }
@@ -73,6 +76,12 @@ namespace Optimarr.Models
         Optimal,
         Good,
         Poor
+    }
+
+    public enum ProcessingStatus
+    {
+        None,           // Normal state
+        Processing      // Video is being redownloaded, will be rescanned after 24h
     }
 }
 

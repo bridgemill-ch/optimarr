@@ -111,6 +111,34 @@ namespace Optimarr.Services
             }
         }
 
+        public async Task<SonarrEpisode?> GetEpisode(int episodeId)
+        {
+            if (!_isEnabled || !_isConnected)
+                return null;
+
+            EnsureApiKeyHeader();
+
+            try
+            {
+                var response = await _httpClient.GetAsync($"/api/v3/episode/{episodeId}");
+                if (response.IsSuccessStatusCode)
+                {
+                    var content = await response.Content.ReadAsStringAsync();
+                    var episode = JsonSerializer.Deserialize<SonarrEpisode>(content, new JsonSerializerOptions
+                    {
+                        PropertyNameCaseInsensitive = true
+                    });
+                    return episode;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogError(ex, "Error getting Sonarr episode {EpisodeId}", episodeId);
+            }
+
+            return null;
+        }
+
         public async Task<List<SonarrEpisode>> GetEpisodesBySeries(int seriesId)
         {
             if (!_isEnabled || !_isConnected)

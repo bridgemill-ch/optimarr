@@ -3,6 +3,106 @@ import { escapeHtml, formatFileSize, formatTimeSpan, getCategoryIcon } from './u
 import { loadBrowseMedia } from './browse.js';
 import { loadDashboard } from './dashboard.js';
 
+// Poll for processing count and update badge
+let processingCountInterval = null;
+
+export function startProcessingCountPolling() {
+    // Clear existing interval if any
+    if (processingCountInterval) {
+        clearInterval(processingCountInterval);
+    }
+    
+    // Poll immediately, then every 5 seconds
+    updateProcessingCount();
+    processingCountInterval = setInterval(updateProcessingCount, 5000);
+}
+
+export function stopProcessingCountPolling() {
+    if (processingCountInterval) {
+        clearInterval(processingCountInterval);
+        processingCountInterval = null;
+    }
+}
+
+async function updateProcessingCount() {
+    try {
+        const response = await fetch('/api/library/processing/count');
+        if (!response.ok) return;
+        
+        const count = await response.json();
+        const badge = document.getElementById('libraryProcessingBadge');
+        
+        if (badge) {
+            if (count > 0) {
+                badge.textContent = count;
+                badge.style.display = 'inline-block';
+            } else {
+                badge.style.display = 'none';
+            }
+        }
+    } catch (error) {
+        console.error('Error updating processing count:', error);
+    }
+}
+
+export async function loadProcessingVideos() {
+    try {
+        const response = await fetch('/api/library/processing/videos?page=1&pageSize=50');
+        if (!response.ok) throw new Error('Failed to load processing videos');
+        
+        const data = await response.json();
+        const container = document.getElementById('processingVideos');
+        
+        if (!container) return;
+        
+        if (!data.videos || data.videos.length === 0) {
+            container.innerHTML = '<div class="empty-state"><p>No videos currently being redownloaded.</p></div>';
+            return;
+        }
+        
+        container.innerHTML = data.videos.map(video => {
+            const startedAt = video.processingStartedAt 
+                ? new Date(video.processingStartedAt).toLocaleString()
+                : 'Unknown';
+            const fileName = video.fileName || (video.filePath ? video.filePath.split(/[/\\]/).pop() : 'Unknown');
+            const title = video.servarrType === 'Sonarr' 
+                ? `${video.sonarrSeriesTitle} - S${String(video.sonarrSeasonNumber || 0).padStart(2, '0')}E${String(video.sonarrEpisodeNumber || 0).padStart(2, '0')}`
+                : video.servarrType === 'Radarr'
+                ? `${video.radarrMovieTitle}${video.radarrYear ? ` (${video.radarrYear})` : ''}`
+                : fileName;
+            
+            return `
+                <div class="processing-video-item">
+                    <div class="processing-video-header">
+                        <span class="processing-badge">⏳ Processing</span>
+                        <strong>${escapeHtml(title)}</strong>
+                    </div>
+                    <div class="processing-video-details">
+                        <div class="detail-row">
+                            <span class="detail-label">File:</span>
+                            <span class="detail-value">${escapeHtml(fileName)}</span>
+                        </div>
+                        <div class="detail-row">
+                            <span class="detail-label">Started:</span>
+                            <span class="detail-value">${startedAt}</span>
+                        </div>
+                        <div class="detail-row">
+                            <span class="detail-label">Service:</span>
+                            <span class="detail-value">${escapeHtml(video.servarrType || 'Unknown')}</span>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }).join('');
+    } catch (error) {
+        console.error('Error loading processing videos:', error);
+        const container = document.getElementById('processingVideos');
+        if (container) {
+            container.innerHTML = `<div class="error-state"><p>Error loading processing videos: ${escapeHtml(error.message)}</p></div>`;
+        }
+    }
+}
+
 export async function loadKnownLibraries() {
     try {
         const response = await fetch('/api/library/paths');

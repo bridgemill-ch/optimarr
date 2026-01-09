@@ -32,6 +32,9 @@ If you find Optimarr useful, consider supporting the project:
   - Match playback data with local library files
   - View client compatibility statistics
   - Track direct play vs transcode patterns
+- **Tdarr Integration**: 
+  - Webhook support for automatic rescan after transcoding
+  - Automatically updates video analysis when Tdarr completes transcoding
 
 ### User Interface
 - **Modern Web UI**: Servarr-style dark theme interface
@@ -90,6 +93,8 @@ docker run -d \
 
 ## Configuration
 
+### Servarr Integration
+
 Edit `appsettings.json` to configure Servarr integrations:
 
 ```json
@@ -114,6 +119,52 @@ Edit `appsettings.json` to configure Servarr integrations:
 ```
 
 **Note:** Basic Auth credentials are optional. Only add them if your Sonarr/Radarr instance requires Basic Authentication. If Basic Auth is not required, you can omit these fields.
+
+### Tdarr Integration
+
+Optimarr supports webhook notifications from Tdarr to automatically rescan videos after transcoding. When Tdarr completes a successful transcode, it can notify Optimarr to update the video analysis with the new file properties.
+
+#### Configuration in Tdarr
+
+In Tdarr, configure a webhook notification with the following command:
+
+```bash
+-vv -t "Success" -b "File {{{args.inputFileObj._id}}}" "http://your-optimarr-host:5000/api/library/webhook/tdarr"
+```
+
+**Command Breakdown:**
+- `-vv`: Verbose output
+- `-t "Success"`: Only trigger on successful transcodes
+- `-b "File {{{args.inputFileObj._id}}}"`: Body containing the file path/ID
+- `"http://your-optimarr-host:5000/api/library/webhook/tdarr"`: Optimarr webhook endpoint URL
+
+**Alternative Command Format:**
+
+If Tdarr sends the file path in a different format, Optimarr will automatically detect it from common fields:
+- `File`
+- `FilePath`
+- `InputFile`
+
+**Example Tdarr Webhook Configuration:**
+
+1. Go to Tdarr Settings → Notifications
+2. Add a new webhook notification
+3. Set the URL to: `http://your-optimarr-host:5000/api/library/webhook/tdarr`
+4. Configure the command as shown above
+5. Set the trigger condition to "On Success" or "On Complete"
+
+**How It Works:**
+
+1. Tdarr completes a successful transcode
+2. Tdarr sends a POST request to Optimarr's webhook endpoint with the file path
+3. Optimarr finds the video in its database by file path
+4. Optimarr automatically rescans the video to update:
+   - Video codec, container, and metadata
+   - Compatibility ratings and scores
+   - Client compatibility results
+   - Full analysis report
+
+**Note:** The webhook endpoint accepts POST requests with JSON payload. The file path must match exactly with the path stored in Optimarr's database.
 
 ### Getting API Keys
 

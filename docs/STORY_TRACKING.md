@@ -37,6 +37,53 @@ _No active stories at this time_
 
 ## Recent Stories
 
+### STORY-005: ProcessingStatus Migration Auto-Detection (v1.1.4)
+- **Status:** ✅ Completed
+- **Priority:** High
+- **Started:** 2025-01-09
+- **Completed:** 2025-01-09
+- **Developer:** AI Assistant
+- **Version:** 1.1.4
+- **Description:** 
+  Fixed database error "no such column: v.ProcessingStartedAt" that occurred when the ProcessingStatus migration had not been applied. Enhanced the DatabaseMigrationService to automatically detect and apply the ProcessingStatus migration on startup, similar to how Servarr migrations are handled.
+
+- **Database Changes:** 
+  No new schema changes - fixes migration execution for existing ProcessingStatus schema changes
+
+- **Migration Script:** 
+  Uses existing `Data/Migrations/AddProcessingStatusFields.sql` - now executed automatically when columns are missing
+
+- **UI Changes:**
+  None - backend fix only
+
+- **API Changes:**
+  None - internal service improvements only
+
+- **Service Updates:**
+  - `DatabaseMigrationService` - Enhanced with ProcessingStatus migration detection and execution
+    - Added `CheckIfProcessingStatusMigrationNeededAsync()` to detect missing ProcessingStatus and ProcessingStartedAt columns
+    - Added `ApplyProcessingStatusMigrationAsync()` to execute ProcessingStatus migration script
+    - Refactored common SQL execution into `ExecuteSqlMigrationAsync()` for code reuse
+    - Added `GetEmbeddedProcessingStatusMigrationSql()` for fallback SQL
+    - Migration service now checks for both Servarr and ProcessingStatus migrations sequentially
+    - Each migration is verified after application
+
+- **Documentation Updates:**
+  - Updated CHANGELOG.md with ProcessingStatus migration fix
+  - Updated version to 1.1.4
+  - Updated STORY_TRACKING.md with this story
+
+- **Testing:**
+  - Verified ProcessingStatus migration detection works correctly
+  - Verified SQL migration executes successfully when columns are missing
+  - Verified migration verification confirms columns are created
+  - Verified sequential migrations (Servarr then ProcessingStatus) work correctly
+
+- **Notes:**
+  This fix resolves the "SQLite Error 1: 'no such column: v.ProcessingStartedAt'" error that occurred when the database schema was missing the ProcessingStatus fields. The migration now runs automatically on startup, ensuring the database schema matches the model.
+
+---
+
 ### STORY-004: Database Migration System Fixes (v1.1.3)
 - **Status:** ✅ Completed
 - **Priority:** High

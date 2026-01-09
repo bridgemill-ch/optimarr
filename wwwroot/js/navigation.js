@@ -1,5 +1,5 @@
 // Navigation and Tab Management
-import { loadKnownLibraries } from './library.js';
+import { loadKnownLibraries, loadProcessingVideos } from './library.js';
 import { loadBrowseFilterOptions, loadBrowseMedia, setupBrowseEventListeners } from './browse.js';
 import { loadPlaybackHistory, loadPlaybackFilterOptions, setupPlaybackEventListeners, loadPlaybackDashboard } from './playback.js';
 import { loadRatingSettings, loadCompatibilitySettings, loadClientSettings, loadJellyfinSettings, loadSonarrSettings, loadRadarrSettings, loadSonarrPathMappings, loadRadarrPathMappings } from './settings.js';
@@ -73,6 +73,7 @@ export function initNavigation() {
                 loadDashboard();
             } else if (targetTab === 'library') {
                 loadKnownLibraries();
+                loadProcessingVideos();
             } else if (targetTab === 'browse') {
                 // Load filters first, then media
                 loadBrowseFilterOptions();
