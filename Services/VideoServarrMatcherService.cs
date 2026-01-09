@@ -214,22 +214,41 @@ namespace Optimarr.Services
 
                     // Load all episodes in parallel for better performance
                     var sonarrEpisodesConcurrent = new ConcurrentDictionary<string, SonarrEpisode>();
-                    // Increase concurrency for large libraries (20 concurrent series, 50 concurrent episode files)
-                    var seriesSemaphore = new SemaphoreSlim(20, 20);
-                    var episodeFileSemaphore = new SemaphoreSlim(50, 50);
+                    // Reduced concurrency to avoid overwhelming Sonarr API (5 series, 10 episode files)
+                    var seriesSemaphore = new SemaphoreSlim(5, 5);
+                    var episodeFileSemaphore = new SemaphoreSlim(10, 10);
                     var tasks = allSeries.Select(async series =>
                     {
                         await seriesSemaphore.WaitAsync();
                         try
                         {
                             var episodes = await _sonarrService.GetEpisodesBySeries(series.Id);
-                            var episodeFileTasks = episodes
-                                .Where(e => e.EpisodeFileId.HasValue)
-                                .Select(async episode =>
+                            
+                            // First pass: Use episode.Path if available (avoids API calls)
+                            foreach (var episode in episodes)
+                            {
+                                if (!string.IsNullOrEmpty(episode.Path))
+                                {
+                                    var normalizedPath = NormalizePath(episode.Path);
+                                    sonarrEpisodesConcurrent.TryAdd(normalizedPath, episode);
+                                }
+                            }
+                            
+                            // Second pass: Only fetch episode files for episodes without Path
+                            var episodesNeedingFileFetch = episodes
+                                .Where(e => e.EpisodeFileId.HasValue && string.IsNullOrEmpty(e.Path))
+                                .ToList();
+                            
+                            if (episodesNeedingFileFetch.Count > 0)
+                            {
+                                var episodeFileTasks = episodesNeedingFileFetch.Select(async episode =>
                                 {
                                     await episodeFileSemaphore.WaitAsync();
                                     try
                                     {
+                                        // Add small delay to avoid overwhelming Sonarr
+                                        await Task.Delay(50);
+                                        
                                         var episodeFile = await _sonarrService.GetEpisodeFile(episode.EpisodeFileId!.Value);
                                         if (episodeFile != null && !string.IsNullOrEmpty(episodeFile.Path))
                                         {
@@ -247,7 +266,11 @@ namespace Optimarr.Services
                                         episodeFileSemaphore.Release();
                                     }
                                 });
-                            await Task.WhenAll(episodeFileTasks);
+                                await Task.WhenAll(episodeFileTasks);
+                            }
+                            
+                            // Add delay between series to avoid overwhelming Sonarr
+                            await Task.Delay(100);
                         }
                         catch (Exception ex)
                         {
@@ -500,21 +523,38 @@ namespace Optimarr.Services
                     var allSeries = await _sonarrService.GetSeries();
                     sonarrSeries = allSeries.ToDictionary(s => s.Id, s => s);
                     var sonarrEpisodesConcurrent = new ConcurrentDictionary<string, SonarrEpisode>();
-                    var seriesSemaphore = new SemaphoreSlim(20, 20);
-                    var episodeFileSemaphore = new SemaphoreSlim(50, 50);
+                    var seriesSemaphore = new SemaphoreSlim(5, 5);
+                    var episodeFileSemaphore = new SemaphoreSlim(10, 10);
                     var tasks = allSeries.Select(async series =>
                     {
                         await seriesSemaphore.WaitAsync();
                         try
                         {
                             var episodes = await _sonarrService.GetEpisodesBySeries(series.Id);
-                            var episodeFileTasks = episodes
-                                .Where(e => e.EpisodeFileId.HasValue)
-                                .Select(async episode =>
+                            
+                            // First pass: Use episode.Path if available (avoids API calls)
+                            foreach (var episode in episodes)
+                            {
+                                if (!string.IsNullOrEmpty(episode.Path))
+                                {
+                                    var normalizedPath = NormalizePath(episode.Path);
+                                    sonarrEpisodesConcurrent.TryAdd(normalizedPath, episode);
+                                }
+                            }
+                            
+                            // Second pass: Only fetch episode files for episodes without Path
+                            var episodesNeedingFileFetch = episodes
+                                .Where(e => e.EpisodeFileId.HasValue && string.IsNullOrEmpty(e.Path))
+                                .ToList();
+                            
+                            if (episodesNeedingFileFetch.Count > 0)
+                            {
+                                var episodeFileTasks = episodesNeedingFileFetch.Select(async episode =>
                                 {
                                     await episodeFileSemaphore.WaitAsync();
                                     try
                                     {
+                                        await Task.Delay(50); // Throttle API calls
                                         var episodeFile = await _sonarrService.GetEpisodeFile(episode.EpisodeFileId!.Value);
                                         if (episodeFile != null && !string.IsNullOrEmpty(episodeFile.Path))
                                         {
@@ -528,7 +568,10 @@ namespace Optimarr.Services
                                         episodeFileSemaphore.Release();
                                     }
                                 });
-                            await Task.WhenAll(episodeFileTasks);
+                                await Task.WhenAll(episodeFileTasks);
+                            }
+                            
+                            await Task.Delay(100); // Delay between series
                         }
                         catch { }
                         finally
