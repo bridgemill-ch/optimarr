@@ -447,11 +447,21 @@ body {
     align-items: center;
     gap: 0.75rem;
     margin-bottom: 0.75rem;
+    flex-wrap: wrap;
 }
 
 .processing-video-header strong {
     color: var(--text-primary);
     font-size: 0.9375rem;
+    flex: 1;
+    min-width: 0;
+}
+
+.processing-video-actions {
+    display: flex;
+    gap: 0.5rem;
+    margin-left: auto;
+    flex-shrink: 0;
 }
 
 .processing-video-details {
@@ -632,9 +642,11 @@ body {
 /* Stats Row */
 .stats-row {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
     gap: 1rem;
     margin-bottom: 1.5rem;
+    width: 100%;
+    box-sizing: border-box;
 }
 
 .stat-box {
@@ -646,6 +658,9 @@ body {
     align-items: center;
     gap: 1rem;
     transition: transform 0.2s ease, box-shadow 0.2s ease, all 0.2s;
+    min-width: 0;
+    overflow: hidden;
+    box-sizing: border-box;
 }
 
 .stat-box.clickable-stat {
@@ -688,6 +703,8 @@ body {
 
 .stat-info {
     flex: 1;
+    min-width: 0;
+    overflow: hidden;
 }
 
 .stat-value {
@@ -695,6 +712,8 @@ body {
     font-weight: 700;
     color: var(--text-primary);
     line-height: 1.2;
+    overflow-wrap: break-word;
+    word-break: break-word;
 }
 
 .stat-label {
@@ -1773,6 +1792,23 @@ body {
     line-height: 1.2;
 }
 
+/* Rating category colors (0-100 scale) */
+.rating-optimal {
+    background-color: var(--success-color);
+    color: white;
+}
+
+.rating-good {
+    background-color: var(--warning-color);
+    color: white;
+}
+
+.rating-poor {
+    background-color: var(--danger-color);
+    color: white;
+}
+
+/* Legacy support for old 0-11 scale (if still used anywhere) */
 .rating-11, .rating-10, .rating-9 {
     background-color: var(--success-color);
     color: white;
@@ -2348,6 +2384,10 @@ body {
     margin-top: 1.5rem;
 }
 
+.media-grid .empty-state {
+    grid-column: 1 / -1;
+}
+
 @media (max-width: 1024px) {
     .media-grid {
         grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
@@ -2795,6 +2835,19 @@ body {
     justify-content: flex-end;
     gap: 0.5rem;
     flex-wrap: wrap;
+    word-break: break-all;
+    overflow-wrap: anywhere;
+}
+
+/* Special handling for file path to prevent overflow */
+.info-item .info-value:has(code),
+.info-item[data-field="file-path"] .info-value {
+    word-break: break-all;
+    overflow-wrap: anywhere;
+    text-align: left;
+    justify-content: flex-start;
+    max-width: 100%;
+    white-space: normal;
 }
 
 .info-item.non-optimal {
@@ -2900,7 +2953,21 @@ body {
 }
 
 /* Empty and Error States */
-.empty-state,
+.empty-state {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 300px;
+    text-align: center;
+    padding: 3rem 1rem;
+    color: var(--text-secondary);
+    width: 100%;
+}
+
+.empty-state p {
+    margin: 0;
+}
+
 .error-state,
 .loading-placeholder {
     text-align: center;
@@ -2985,7 +3052,7 @@ body {
     }
     
     .stats-row {
-        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
         gap: 1rem;
     }
     
@@ -3000,14 +3067,27 @@ body {
 
 /* Responsive - Tablet and below */
 @media (max-width: 768px) {
+    .mobile-menu-toggle {
+        display: flex;
+    }
+    
     .sidebar {
-        width: 260px;
+        width: 280px;
+        transform: translateX(-100%);
+        transition: transform 0.3s ease;
+        box-shadow: 2px 0 8px rgba(0, 0, 0, 0.3);
+    }
+    
+    .sidebar.open {
+        transform: translateX(0);
+        z-index: 1600;
     }
     
     .main-content {
-        margin-left: 260px;
-        width: calc(100% - 260px);
+        margin-left: 0;
+        width: 100%;
         padding: 1rem;
+        padding-top: 4rem; /* Space for mobile menu button */
     }
     
     .stats-row {
@@ -3518,5 +3598,21 @@ body {
     
     .path-mapping-item > div > div {
         min-width: 100%;
+    }
+}
+
+/* Rating Weights Responsive */
+.rating-weights-settings {
+    width: 100%;
+    box-sizing: border-box;
+}
+
+@media (max-width: 768px) {
+    .rating-weights-settings > div[style*="grid-template-columns"] {
+        grid-template-columns: 1fr !important;
+    }
+    
+    .rating-weights-settings .form-group {
+        max-width: 100% !important;
     }
 }

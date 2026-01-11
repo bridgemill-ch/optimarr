@@ -1,18 +1,18 @@
 # Product Requirement Document (PRD)
 ## Optimarr - Media Optimization Platform
 
-**Version:** 1.0  
-**Last Updated:** 2025-01-XX  
+**Version:** 1.2.0  
+**Last Updated:** 2026-01-11  
 **Status:** Active Development
 
 ---
 
 ## 1. Executive Summary
 
-Optimarr is a web-based media optimization platform designed to analyze video files and determine their compatibility with various media server clients, particularly Jellyfin. The application integrates with the Servarr ecosystem (Sonarr, Radarr) to provide automated media library management and optimization recommendations.
+Optimarr is a web-based media optimization platform designed to analyze video files and determine their compatibility based on media properties (codecs, containers, bit depth, HDR, etc.). The application integrates with the Servarr ecosystem (Sonarr, Radarr) to provide automated media library management and optimization recommendations.
 
 ### 1.1 Product Vision
-To help media server administrators optimize their video libraries for maximum Direct Play compatibility, reducing server transcoding load and improving playback quality across all client devices.
+To help media server administrators optimize their video libraries based on media properties (codecs, containers, bit depth, HDR, etc.), enabling better compatibility and reducing server transcoding load.
 
 ### 1.2 Target Users
 - **Primary:** Media server administrators running Jellyfin with Sonarr/Radarr
@@ -25,7 +25,7 @@ To help media server administrators optimize their video libraries for maximum D
 
 ### 2.1 Current Pain Points
 1. **Transcoding Overhead:** Many video files require server-side transcoding, consuming CPU resources and bandwidth
-2. **Compatibility Uncertainty:** Administrators don't know which files will Direct Play on which clients
+2. **Compatibility Uncertainty:** Administrators don't know which media properties (codecs, containers, etc.) are compatible with their setup
 3. **Manual Analysis:** No automated way to identify optimization opportunities across large libraries
 4. **Fragmented Tools:** Separate tools for library management (Sonarr/Radarr) and playback analysis (Jellyfin)
 5. **Lack of Historical Data:** No visibility into playback patterns to inform optimization decisions
@@ -38,10 +38,11 @@ The home media server market is growing, with Jellyfin, Plex, and Emby serving m
 ## 3. Product Goals & Success Metrics
 
 ### 3.1 Primary Goals
-1. **Compatibility Analysis:** Accurately determine Direct Play compatibility for video files across 11+ Jellyfin clients
+1. **Compatibility Analysis:** Accurately determine compatibility for video files based on media properties
 2. **Library Integration:** Seamlessly sync with Sonarr/Radarr to analyze existing libraries
 3. **Actionable Insights:** Provide clear recommendations for media optimization
 4. **User Experience:** Deliver a modern, intuitive web interface matching Servarr design patterns
+5. **Configurable Rating System:** Allow users to customize which media properties are considered supported
 
 ### 3.2 Success Metrics
 - **Accuracy:** >95% compatibility prediction accuracy
@@ -63,11 +64,12 @@ The home media server market is growing, with Jellyfin, Plex, and Emby serving m
 - **REQ-005:** Support external subtitle file analysis (SRT, VTT, ASS, SSA, SUB, VobSub)
 
 #### 4.1.2 Compatibility Scoring
-- **REQ-006:** Calculate compatibility score (0-11) based on number of clients that can Direct Play
-- **REQ-007:** Provide per-client compatibility breakdown
-- **REQ-008:** Support configurable rating thresholds (Optimal, Good, Combined)
-- **REQ-009:** Allow disabling specific clients from compatibility calculations
-- **REQ-010:** Support client-specific compatibility overrides
+- **REQ-006:** Calculate compatibility score (0-100) based on media properties
+- **REQ-007:** Start with perfect score (100) and deduct points for unsupported properties
+- **REQ-008:** Support configurable media property settings (supported/unsupported)
+- **REQ-009:** Support configurable rating impact weights for each property type
+- **REQ-010:** Support configurable rating thresholds (Optimal, Good, Poor) - defaults: Optimal ≥80, Good ≥60, Poor <60
+- **REQ-011:** Provide detailed rating breakdown showing deductions and issues
 
 ### 4.2 Library Management
 
@@ -112,11 +114,13 @@ The home media server market is growing, with Jellyfin, Plex, and Emby serving m
 - **REQ-036:** Track Direct Play vs Transcode patterns
 - **REQ-037:** Run playback sync as background service
 
-#### 4.4.2 Client Compatibility Data
-- **REQ-038:** Maintain up-to-date Jellyfin client compatibility matrix
-- **REQ-039:** Support 11+ Jellyfin clients (Android, iOS, Web, TV, etc.)
-- **REQ-040:** Track codec support per client
-- **REQ-041:** Support container format compatibility per client
+#### 4.4.2 Media Property Configuration
+- **REQ-038:** Allow users to configure which video codecs are supported
+- **REQ-039:** Allow users to configure which audio codecs are supported
+- **REQ-040:** Allow users to configure which containers are supported
+- **REQ-041:** Allow users to configure which subtitle formats are supported
+- **REQ-042:** Allow users to configure supported bit depths
+- **REQ-043:** Provide default settings for common media properties
 
 ### 4.5 User Interface
 
@@ -142,10 +146,11 @@ The home media server market is growing, with Jellyfin, Plex, and Emby serving m
 - **REQ-054:** Configure Jellyfin connection settings
 - **REQ-055:** Configure Sonarr connection settings
 - **REQ-056:** Configure Radarr connection settings
-- **REQ-057:** Manage global rating thresholds
-- **REQ-058:** Manage client compatibility overrides
+- **REQ-057:** Manage media property settings (supported/unsupported)
+- **REQ-058:** Manage rating impact weights
 - **REQ-059:** Configure path mappings for Sonarr/Radarr
 - **REQ-060:** Test connections before saving
+- **REQ-061:** Initialize default media property settings
 
 ### 4.6 API & Integration
 
@@ -266,14 +271,15 @@ See [CHANGELOG.md](../docs/CHANGELOG.md) for detailed version history and story 
 ## 9. User Stories
 
 ### 9.1 As a Media Server Administrator
-- I want to analyze my video library to identify files that need transcoding
-- I want to see which files will Direct Play on my users' devices
+- I want to analyze my video library to identify files that need optimization
+- I want to see which media properties (codecs, containers, etc.) are compatible with my setup
 - I want to sync my library paths from Sonarr/Radarr automatically
 - I want to view playback history to understand transcoding patterns
 
 ### 9.2 As a Power User
-- I want to configure custom compatibility thresholds
-- I want to disable certain clients from compatibility calculations
+- I want to configure custom compatibility thresholds (Optimal/Good/Poor)
+- I want to configure which media properties are supported/unsupported
+- I want to customize rating impact weights for different property types
 - I want to set up path mappings for Docker environments
 - I want to bulk analyze multiple series or movies
 

@@ -36,7 +36,9 @@ namespace Optimarr.Services
         public async Task MatchVideoWithServarrAsync(VideoAnalysis video, 
             Dictionary<string, SonarrEpisode>? sonarrEpisodes = null,
             Dictionary<int, SonarrSeries>? sonarrSeries = null,
-            Dictionary<string, RadarrMovie>? radarrMovies = null)
+            Dictionary<string, RadarrMovie>? radarrMovies = null,
+            Dictionary<string, SonarrEpisode>? sonarrEpisodesByTitle = null,
+            Dictionary<string, RadarrMovie>? radarrMoviesByTitle = null)
         {
             if (string.IsNullOrEmpty(video.FilePath))
             {
@@ -45,6 +47,7 @@ namespace Optimarr.Services
             }
 
             var normalizedPath = NormalizePath(video.FilePath);
+            var normalizedTitle = NormalizeTitle(video.FilePath);
 
             // Try to match with Sonarr first (using pre-loaded data if available)
             if (_sonarrService.IsEnabled && _sonarrService.IsConnected)
@@ -53,10 +56,17 @@ namespace Optimarr.Services
                 {
                     SonarrEpisode? episode = null;
                     
-                    // Use pre-loaded data if available (much faster)
+                    // First try path-based matching (most reliable)
                     if (sonarrEpisodes != null && sonarrEpisodes.TryGetValue(normalizedPath, out episode))
                     {
-                        // Episode found in cache
+                        // Episode found by path
+                    }
+                    // Fallback to title-based matching if path match fails
+                    else if (sonarrEpisodesByTitle != null && !string.IsNullOrEmpty(normalizedTitle) && 
+                             sonarrEpisodesByTitle.TryGetValue(normalizedTitle, out episode))
+                    {
+                        _logger.LogDebug("Matched video {FilePath} with Sonarr episode by title: {Title}", 
+                            video.FilePath, normalizedTitle);
                     }
                     else
                     {
@@ -107,10 +117,17 @@ namespace Optimarr.Services
                 {
                     RadarrMovie? movie = null;
                     
-                    // Use pre-loaded data if available (much faster)
+                    // First try path-based matching (most reliable)
                     if (radarrMovies != null && radarrMovies.TryGetValue(normalizedPath, out movie))
                     {
-                        // Movie found in cache
+                        // Movie found by path
+                    }
+                    // Fallback to title-based matching if path match fails
+                    else if (radarrMoviesByTitle != null && !string.IsNullOrEmpty(normalizedTitle) && 
+                             radarrMoviesByTitle.TryGetValue(normalizedTitle, out movie))
+                    {
+                        _logger.LogDebug("Matched video {FilePath} with Radarr movie by title: {Title}", 
+                            video.FilePath, normalizedTitle);
                     }
                     else
                     {
@@ -200,8 +217,10 @@ namespace Optimarr.Services
             // Pre-load Servarr data to avoid repeated API calls
             _logger.LogInformation("Pre-loading Servarr data...");
             Dictionary<string, SonarrEpisode>? sonarrEpisodes = null;
+            Dictionary<string, SonarrEpisode>? sonarrEpisodesByTitle = null;
             Dictionary<int, SonarrSeries>? sonarrSeries = null;
             Dictionary<string, RadarrMovie>? radarrMovies = null;
+            Dictionary<string, RadarrMovie>? radarrMoviesByTitle = null;
 
             if (_sonarrService.IsEnabled && _sonarrService.IsConnected)
             {
@@ -214,6 +233,7 @@ namespace Optimarr.Services
 
                     // Load all episodes in parallel for better performance
                     var sonarrEpisodesConcurrent = new ConcurrentDictionary<string, SonarrEpisode>();
+                    var sonarrEpisodesByTitleConcurrent = new ConcurrentDictionary<string, SonarrEpisode>();
                     // Reduced concurrency to avoid overwhelming Sonarr API (5 series, 10 episode files)
                     var seriesSemaphore = new SemaphoreSlim(5, 5);
                     var episodeFileSemaphore = new SemaphoreSlim(10, 10);
@@ -231,6 +251,13 @@ namespace Optimarr.Services
                                 {
                                     var normalizedPath = NormalizePath(episode.Path);
                                     sonarrEpisodesConcurrent.TryAdd(normalizedPath, episode);
+                                    
+                                    // Also index by title for container-agnostic matching
+                                    var normalizedTitle = NormalizeTitle(episode.Path);
+                                    if (!string.IsNullOrEmpty(normalizedTitle))
+                                    {
+                                        sonarrEpisodesByTitleConcurrent.TryAdd(normalizedTitle, episode);
+                                    }
                                 }
                             }
                             
@@ -254,12 +281,19 @@ namespace Optimarr.Services
                                         {
                                             var normalizedPath = NormalizePath(episodeFile.Path);
                                             sonarrEpisodesConcurrent.TryAdd(normalizedPath, episode);
+                                            
+                                            // Also index by title for container-agnostic matching
+                                            var normalizedTitle = NormalizeTitle(episodeFile.Path);
+                                            if (!string.IsNullOrEmpty(normalizedTitle))
+                                            {
+                                                sonarrEpisodesByTitleConcurrent.TryAdd(normalizedTitle, episode);
+                                            }
                                         }
                                     }
                                     catch (Exception ex)
                                     {
                                         _logger.LogWarning(ex, "Error loading episode file {EpisodeFileId} for series {SeriesId}", 
-                                            episode.EpisodeFileId.Value, series.Id);
+                                            episode.EpisodeFileId ?? 0, series.Id);
                                     }
                                     finally
                                     {
@@ -283,7 +317,9 @@ namespace Optimarr.Services
                     });
                     await Task.WhenAll(tasks);
                     sonarrEpisodes = sonarrEpisodesConcurrent.ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
-                    _logger.LogInformation("Loaded {EpisodeCount} episode paths from Sonarr", sonarrEpisodes.Count);
+                    sonarrEpisodesByTitle = sonarrEpisodesByTitleConcurrent.ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
+                    _logger.LogInformation("Loaded {EpisodeCount} episode paths and {TitleCount} episode titles from Sonarr", 
+                        sonarrEpisodes.Count, sonarrEpisodesByTitle.Count);
                 }
                 catch (Exception ex)
                 {
@@ -299,6 +335,7 @@ namespace Optimarr.Services
                     var movies = await _radarrService.GetMovies();
                     // Use ConcurrentDictionary for thread-safe parallel processing
                     var radarrMoviesConcurrent = new ConcurrentDictionary<string, RadarrMovie>();
+                    var radarrMoviesByTitleConcurrent = new ConcurrentDictionary<string, RadarrMovie>();
                     
                     // Process movies in parallel batches for better performance
                     var movieSemaphore = new SemaphoreSlim(50, 50); // Process 50 movies concurrently
@@ -311,6 +348,13 @@ namespace Optimarr.Services
                             {
                                 var normalizedPath = NormalizePath(movie.MovieFile.Path);
                                 radarrMoviesConcurrent.TryAdd(normalizedPath, movie);
+                                
+                                // Also index by title for container-agnostic matching
+                                var normalizedTitle = NormalizeTitle(movie.MovieFile.Path);
+                                if (!string.IsNullOrEmpty(normalizedTitle))
+                                {
+                                    radarrMoviesByTitleConcurrent.TryAdd(normalizedTitle, movie);
+                                }
                             }
                         }
                         finally
@@ -321,7 +365,9 @@ namespace Optimarr.Services
                     await Task.WhenAll(movieTasks);
                     
                     radarrMovies = radarrMoviesConcurrent.ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
-                    _logger.LogInformation("Loaded {MovieCount} movie paths from Radarr", radarrMovies.Count);
+                    radarrMoviesByTitle = radarrMoviesByTitleConcurrent.ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
+                    _logger.LogInformation("Loaded {MovieCount} movie paths and {TitleCount} movie titles from Radarr", 
+                        radarrMovies.Count, radarrMoviesByTitle.Count);
                 }
                 catch (Exception ex)
                 {
@@ -399,7 +445,8 @@ namespace Optimarr.Services
                         if (!alreadyMatched)
                         {
                             var hadMatch = !string.IsNullOrEmpty(video.ServarrType);
-                            await MatchVideoWithServarrAsync(video, sonarrEpisodes, sonarrSeries, radarrMovies);
+                            await MatchVideoWithServarrAsync(video, sonarrEpisodes, sonarrSeries, radarrMovies, 
+                                sonarrEpisodesByTitle, radarrMoviesByTitle);
                             
                             lock (processedLock)
                             {
@@ -513,8 +560,10 @@ namespace Optimarr.Services
 
             // Pre-load Servarr data (same optimized approach as MatchAllVideosAsync)
             Dictionary<string, SonarrEpisode>? sonarrEpisodes = null;
+            Dictionary<string, SonarrEpisode>? sonarrEpisodesByTitle = null;
             Dictionary<int, SonarrSeries>? sonarrSeries = null;
             Dictionary<string, RadarrMovie>? radarrMovies = null;
+            Dictionary<string, RadarrMovie>? radarrMoviesByTitle = null;
 
             if (_sonarrService.IsEnabled && _sonarrService.IsConnected)
             {
@@ -523,6 +572,7 @@ namespace Optimarr.Services
                     var allSeries = await _sonarrService.GetSeries();
                     sonarrSeries = allSeries.ToDictionary(s => s.Id, s => s);
                     var sonarrEpisodesConcurrent = new ConcurrentDictionary<string, SonarrEpisode>();
+                    var sonarrEpisodesByTitleConcurrent = new ConcurrentDictionary<string, SonarrEpisode>();
                     var seriesSemaphore = new SemaphoreSlim(5, 5);
                     var episodeFileSemaphore = new SemaphoreSlim(10, 10);
                     var tasks = allSeries.Select(async series =>
@@ -539,6 +589,13 @@ namespace Optimarr.Services
                                 {
                                     var normalizedPath = NormalizePath(episode.Path);
                                     sonarrEpisodesConcurrent.TryAdd(normalizedPath, episode);
+                                    
+                                    // Also index by title for container-agnostic matching
+                                    var normalizedTitle = NormalizeTitle(episode.Path);
+                                    if (!string.IsNullOrEmpty(normalizedTitle))
+                                    {
+                                        sonarrEpisodesByTitleConcurrent.TryAdd(normalizedTitle, episode);
+                                    }
                                 }
                             }
                             
@@ -560,6 +617,13 @@ namespace Optimarr.Services
                                         {
                                             var normalizedPath = NormalizePath(episodeFile.Path);
                                             sonarrEpisodesConcurrent.TryAdd(normalizedPath, episode);
+                                            
+                                            // Also index by title for container-agnostic matching
+                                            var normalizedTitle = NormalizeTitle(episodeFile.Path);
+                                            if (!string.IsNullOrEmpty(normalizedTitle))
+                                            {
+                                                sonarrEpisodesByTitleConcurrent.TryAdd(normalizedTitle, episode);
+                                            }
                                         }
                                     }
                                     catch { }
@@ -581,6 +645,7 @@ namespace Optimarr.Services
                     });
                     await Task.WhenAll(tasks);
                     sonarrEpisodes = sonarrEpisodesConcurrent.ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
+                    sonarrEpisodesByTitle = sonarrEpisodesByTitleConcurrent.ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
                 }
                 catch { }
             }
@@ -591,6 +656,7 @@ namespace Optimarr.Services
                 {
                     var movies = await _radarrService.GetMovies();
                     var radarrMoviesConcurrent = new ConcurrentDictionary<string, RadarrMovie>();
+                    var radarrMoviesByTitleConcurrent = new ConcurrentDictionary<string, RadarrMovie>();
                     var movieSemaphore = new SemaphoreSlim(50, 50);
                     var movieTasks = movies.Select(async movie =>
                     {
@@ -601,6 +667,13 @@ namespace Optimarr.Services
                             {
                                 var normalizedPath = NormalizePath(movie.MovieFile.Path);
                                 radarrMoviesConcurrent.TryAdd(normalizedPath, movie);
+                                
+                                // Also index by title for container-agnostic matching
+                                var normalizedTitle = NormalizeTitle(movie.MovieFile.Path);
+                                if (!string.IsNullOrEmpty(normalizedTitle))
+                                {
+                                    radarrMoviesByTitleConcurrent.TryAdd(normalizedTitle, movie);
+                                }
                             }
                         }
                         finally
@@ -610,6 +683,7 @@ namespace Optimarr.Services
                     });
                     await Task.WhenAll(movieTasks);
                     radarrMovies = radarrMoviesConcurrent.ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
+                    radarrMoviesByTitle = radarrMoviesByTitleConcurrent.ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
                 }
                 catch { }
             }
@@ -662,7 +736,8 @@ namespace Optimarr.Services
                         if (!alreadyMatched)
                         {
                             var hadMatch = !string.IsNullOrEmpty(video.ServarrType);
-                            await MatchVideoWithServarrAsync(video, sonarrEpisodes, sonarrSeries, radarrMovies);
+                            await MatchVideoWithServarrAsync(video, sonarrEpisodes, sonarrSeries, radarrMovies, 
+                                sonarrEpisodesByTitle, radarrMoviesByTitle);
                             
                             lock (processedLock)
                             {
@@ -712,6 +787,32 @@ namespace Optimarr.Services
         {
             if (string.IsNullOrEmpty(path)) return string.Empty;
             return path.Replace('\\', '/').TrimEnd('/').ToLowerInvariant();
+        }
+
+        /// <summary>
+        /// Extracts and normalizes the title from a file path (filename without extension)
+        /// </summary>
+        private string NormalizeTitle(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return string.Empty;
+            
+            try
+            {
+                // Get filename without extension
+                var fileName = System.IO.Path.GetFileName(path);
+                if (string.IsNullOrEmpty(fileName)) return string.Empty;
+                
+                // Remove extension
+                var title = System.IO.Path.GetFileNameWithoutExtension(fileName);
+                if (string.IsNullOrEmpty(title)) return string.Empty;
+                
+                // Normalize: lowercase, trim whitespace
+                return title.Trim().ToLowerInvariant();
+            }
+            catch
+            {
+                return string.Empty;
+            }
         }
 
         private int? ExtractYearFromPath(string path)

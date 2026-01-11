@@ -77,30 +77,6 @@
                     <h2>Dashboard</h2>
                 </div>
 
-                <div class="content-box" id="ratingInfoBox" style="margin-bottom: 1.5rem;">
-                    <div class="box-header" style="position: relative;">
-                        <button class="info-banner-close" onclick="closeRatingInfoBox()" aria-label="Close" title="Close">
-                            <span>×</span>
-                        </button>
-                        <h3>Understanding Compatibility Ratings</h3>
-                        <p style="margin-top: 0.5rem; color: var(--text-secondary);">
-                            The rating shows the number of Jellyfin clients that can Direct Play the video (out of 11 total clients). Higher numbers indicate better compatibility.
-                        </p>
-                    </div>
-                    <div class="box-content">
-                        <div class="info-box" style="margin: 0;">
-                            <p style="margin: 0 0 0.75rem 0;">Videos are rated based on the number of Jellyfin clients that can Direct Play them (out of 11 total clients):</p>
-                            <ul style="margin: 0 0 0.75rem 0; padding-left: 1.5rem;">
-                                <li><strong>Optimal (✓):</strong> At least <span id="dashboardOptimalThreshold">8</span> clients can <strong>Direct Play</strong> - no server processing needed, best performance</li>
-                                <li><strong>Good (~):</strong> At least <span id="dashboardGoodDirectThreshold">5</span> clients can Direct Play, OR at least <span id="dashboardGoodCombinedThreshold">8</span> clients can Direct Play or <strong>Remux</strong> (container change only) - minimal server load</li>
-                                <li><strong>Poor (✗):</strong> Fewer clients meet the "Good" criteria - may require <strong>Transcoding</strong> (full re-encoding) on many devices, higher server CPU usage</li>
-                            </ul>
-                            <p style="margin: 0; font-size: 0.875rem; color: var(--text-secondary);">
-                                <strong>💡 Tip:</strong> You can adjust these thresholds in <a href="#settings" onclick="document.querySelector('[data-tab=settings]').click(); return false;" style="color: var(--primary-color); text-decoration: underline;">Settings</a> to match your needs. Changes only apply to newly scanned videos.
-                            </p>
-                        </div>
-                    </div>
-                </div>
 
                 <div class="stats-row">
                     <div class="stat-box clickable-stat" onclick="navigateToBrowseWithFilter('')" style="cursor: pointer;" title="Click to view all videos">
@@ -145,6 +121,13 @@
                             <div class="stat-label">HDR Videos</div>
                         </div>
                     </div>
+                    <div class="stat-box">
+                        <div class="stat-icon">📺</div>
+                        <div class="stat-info">
+                            <div class="stat-value" id="sdrCount">-</div>
+                            <div class="stat-label">SDR Videos</div>
+                        </div>
+                    </div>
                 </div>
 
                 <div class="content-box">
@@ -175,27 +158,63 @@
                     </div>
                 </div>
 
-                <!-- Client Compatibility Dashboard -->
-                <div class="content-box">
-                    <div class="box-header">
-                        <h3>Client Compatibility Overview</h3>
-                        <small style="color: var(--text-secondary); font-weight: normal;">Compatibility across all videos in your library</small>
+                <div class="content-row">
+                    <div class="content-box">
+                        <div class="box-header">
+                            <h3>Audio Codecs</h3>
+                        </div>
+                        <div class="box-content">
+                            <div id="audioCodecChart" class="chart-container"></div>
+                        </div>
                     </div>
-                    <div class="box-content">
-                        <div id="clientCompatibilityList" class="client-compatibility-list"></div>
+                    <div class="content-box">
+                        <div class="box-header">
+                            <h3>Audio Channels</h3>
+                        </div>
+                        <div class="box-content">
+                            <div id="audioChannelChart" class="chart-container"></div>
+                        </div>
                     </div>
                 </div>
 
-                <!-- Jellyfin Clients Section -->
-                <div class="content-box" id="jellyfinClientsBox" style="display: none;">
-                    <div class="box-header">
-                        <h3>📺 Jellyfin Clients in Use</h3>
-                        <small style="color: var(--text-secondary); font-weight: normal;">Based on playback history</small>
+                <div class="content-row">
+                    <div class="content-box">
+                        <div class="box-header">
+                            <h3>HDR vs SDR</h3>
+                        </div>
+                        <div class="box-content">
+                            <div id="hdrSdrChart" class="chart-container"></div>
+                        </div>
                     </div>
-                    <div class="box-content">
-                        <div id="jellyfinClients" class="loading-placeholder">Loading clients...</div>
+                    <div class="content-box">
+                        <div class="box-header">
+                            <h3>Bit Depth</h3>
+                        </div>
+                        <div class="box-content">
+                            <div id="bitDepthChart" class="chart-container"></div>
+                        </div>
                     </div>
                 </div>
+
+                <div class="content-row">
+                    <div class="content-box">
+                        <div class="box-header">
+                            <h3>Subtitle Formats</h3>
+                        </div>
+                        <div class="box-content">
+                            <div id="subtitleFormatChart" class="chart-container"></div>
+                        </div>
+                    </div>
+                    <div class="content-box">
+                        <div class="box-header">
+                            <h3>Bitrate Ranges</h3>
+                        </div>
+                        <div class="box-content">
+                            <div id="bitrateRangeChart" class="chart-container"></div>
+                        </div>
+                    </div>
+                </div>
+
             </section>
 
             <!-- Browse Tab -->
@@ -251,6 +270,37 @@
                                         <option value="">All Media</option>
                                         <option value="synced">Synced with Sonarr/Radarr</option>
                                         <option value="not-synced">Not Synced</option>
+                                    </select>
+                                    <select id="browseAudioCodecFilter" class="form-control">
+                                        <option value="">All Audio Codecs</option>
+                                    </select>
+                                    <select id="browseAudioChannelFilter" class="form-control">
+                                        <option value="">All Audio Channels</option>
+                                        <option value="mono">Mono (1.0)</option>
+                                        <option value="stereo">Stereo (2.0)</option>
+                                        <option value="surround">Surround (5.1+)</option>
+                                    </select>
+                                    <select id="browseHdrSdrFilter" class="form-control">
+                                        <option value="">All (HDR/SDR)</option>
+                                        <option value="hdr">HDR Only</option>
+                                        <option value="sdr">SDR Only</option>
+                                    </select>
+                                    <select id="browseBitDepthFilter" class="form-control">
+                                        <option value="">All Bit Depths</option>
+                                        <option value="8">8-bit</option>
+                                        <option value="10">10-bit</option>
+                                        <option value="12">12-bit</option>
+                                    </select>
+                                    <select id="browseSubtitleFormatFilter" class="form-control">
+                                        <option value="">All Subtitle Formats</option>
+                                    </select>
+                                    <select id="browseBitrateRangeFilter" class="form-control">
+                                        <option value="">All Bitrate Ranges</option>
+                                        <option value="0-5">0-5 Mbps</option>
+                                        <option value="5-10">5-10 Mbps</option>
+                                        <option value="10-20">10-20 Mbps</option>
+                                        <option value="20-50">20-50 Mbps</option>
+                                        <option value="50+">50+ Mbps</option>
                                     </select>
                                     <input type="text" id="browseSearch" class="form-control" placeholder="Search filename, path, codec, container..." onkeypress="if(event.key==='Enter') loadBrowseMedia()">
                                     <label class="checkbox-label" style="display: flex; align-items: center; gap: 0.5rem; white-space: nowrap;">
@@ -375,8 +425,15 @@
                 <!-- Processing Videos (Redownloading) -->
                 <div class="content-box">
                     <div class="box-header">
-                        <h3>Redownloading Videos</h3>
-                        <small style="color: var(--text-secondary); font-weight: normal;">Videos currently being redownloaded will be automatically rescanned after 24 hours</small>
+                        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem;">
+                            <div>
+                                <h3>Redownloading Videos</h3>
+                                <small style="color: var(--text-secondary); font-weight: normal;">Videos currently being redownloaded will be automatically rescanned after 24 hours</small>
+                            </div>
+                            <button class="btn btn-sm btn-secondary" onclick="rescanAllProcessingVideos()" id="rescanAllProcessingBtn" title="Rescan all processing videos">
+                                <span class="icon">↻</span> Rescan All
+                            </button>
+                        </div>
                     </div>
                     <div class="box-content">
                         <div id="processingVideos">
@@ -624,86 +681,64 @@
                     </div>
                 </div>
 
+                <!-- Media Property Settings Section -->
+                <div class="content-box" style="margin-top: 1.5rem;">
+                    <div class="box-header">
+                        <h3>Media Property Settings</h3>
+                    </div>
+                    <div class="box-content">
+                        <div class="settings-section">
+                            <div class="info-box" style="margin-bottom: 1.5rem; padding: 1rem; background-color: var(--bg-secondary); border-radius: 4px; border-left: 3px solid var(--primary-color);">
+                                <p style="margin: 0; font-size: 0.875rem; color: var(--text-secondary);">
+                                    Configure which media properties are supported. Videos are rated based on their properties, with unsupported properties reducing the rating. Changes will apply to newly analyzed videos and trigger recalculation for all existing videos.
+                                </p>
+                            </div>
+                            <div id="mediaPropertySettingsContainer">
+                                <div class="loading-placeholder">Loading media property settings...</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Rating Thresholds Section -->
                 <div class="content-box" style="margin-top: 1.5rem;">
                     <div class="box-header">
                         <h3>Rating Thresholds</h3>
                     </div>
                     <div class="box-content">
-                        <form id="ratingSettingsForm" class="form">
-                            <div class="settings-section">
-                                <h4 style="margin-top: 0; margin-bottom: 1rem;">Global Rating Thresholds</h4>
-                                <div class="info-box" style="margin-bottom: 1.5rem; padding: 1rem; background-color: var(--bg-secondary); border-radius: 4px; border-left: 3px solid var(--primary-color);">
-                                    <p style="margin: 0 0 0.5rem 0; font-weight: 500;">Rating thresholds:</p>
-                                    <ul style="margin: 0; padding-left: 1.5rem; color: var(--text-secondary);">
-                                        <li><strong>Optimal:</strong> At least <span id="currentOptimalThreshold">8</span> clients can Direct Play</li>
-                                        <li><strong>Good:</strong> At least <span id="currentGoodDirectThreshold">5</span> clients can Direct Play, OR at least <span id="currentGoodCombinedThreshold">8</span> clients can Direct Play or Remux combined</li>
-                                        <li><strong>Poor:</strong> Fewer clients meet the "Good" criteria</li>
-                                    </ul>
-                                </div>
-                                <div class="form-group">
-                                    <label for="optimalThreshold">Optimal Rating Threshold (Direct Play clients)</label>
-                                    <input type="number" id="optimalThreshold" class="form-control" min="1" max="20" step="1">
-                                    <small class="form-help">Minimum number of clients that must support Direct Play for "Optimal" rating</small>
-                                </div>
-                                <div class="form-group">
-                                    <label for="goodDirectThreshold">Good Rating Threshold - Direct Play (clients)</label>
-                                    <input type="number" id="goodDirectThreshold" class="form-control" min="1" max="20" step="1">
-                                    <small class="form-help">Minimum Direct Play clients for "Good" rating (if combined threshold not met)</small>
-                                </div>
-                                <div class="form-group">
-                                    <label for="goodCombinedThreshold">Good Rating Threshold - Combined (Direct Play + Remux clients)</label>
-                                    <input type="number" id="goodCombinedThreshold" class="form-control" min="1" max="20" step="1">
-                                    <small class="form-help">Minimum combined Direct Play + Remux clients for "Good" rating</small>
-                                </div>
-                                <div class="form-actions">
-                                    <button type="submit" class="btn btn-primary">Save Rating Settings</button>
-                                </div>
-                            </div>
-                        </form>
-                    </div>
-                </div>
-
-                <!-- Jellyfin Clients Section -->
-                <div class="content-box" style="margin-top: 1.5rem;">
-                    <div class="box-header">
-                        <h3>Jellyfin Clients</h3>
-                    </div>
-                    <div class="box-content">
                         <div class="settings-section">
-                            <div class="info-box" style="margin-bottom: 1rem; padding: 0.75rem; background-color: var(--bg-secondary); border-radius: 4px; border-left: 3px solid var(--primary-color);">
+                            <div class="info-box" style="margin-bottom: 1.5rem; padding: 1rem; background-color: var(--bg-secondary); border-radius: 4px; border-left: 3px solid var(--primary-color);">
                                 <p style="margin: 0; font-size: 0.875rem; color: var(--text-secondary);">
-                                    Enable or disable Jellyfin clients for compatibility calculations. Disabled clients will not be included in the compatibility rating (0-11 scale) or Client Compatibility Overrides. This allows you to focus on the clients you actually use.
+                                    Configure the rating thresholds that determine which category (Optimal, Good, or Poor) a video belongs to based on its compatibility rating (0-100 scale).
                                 </p>
                             </div>
-                            <div id="clientSettingsContainer">
-                                <div class="loading-placeholder">Loading client settings...</div>
-                            </div>
-                            <div style="margin-top: 1rem;">
-                                <button type="button" class="btn btn-primary" onclick="saveClientSettings()">Save Client Settings</button>
+                            <div id="ratingThresholdsContainer">
+                                <div class="loading-placeholder">Loading rating thresholds...</div>
                             </div>
                         </div>
                     </div>
                 </div>
 
-                <!-- Compatibility Overrides Section -->
+                <!-- Rating Weights Section -->
                 <div class="content-box" style="margin-top: 1.5rem;">
                     <div class="box-header">
-                        <h3>Client Compatibility Overrides</h3>
+                        <h3>Rating Impact Weights</h3>
                     </div>
                     <div class="box-content">
                         <div class="settings-section">
                             <div class="info-box" style="margin-bottom: 1.5rem; padding: 1rem; background-color: var(--bg-secondary); border-radius: 4px; border-left: 3px solid var(--primary-color);">
                                 <p style="margin: 0; font-size: 0.875rem; color: var(--text-secondary);">
-                                    Override default compatibility settings for specific codecs and clients. Changes will apply to newly analyzed videos. Use this to customize compatibility based on your specific client devices and versions.
+                                    Configure how much each factor impacts the compatibility rating (0-100 scale). Higher values mean more impact. Videos start at 100 and points are deducted for unsupported properties or problematic factors.
                                 </p>
                             </div>
-                            <div id="compatibilitySettingsContainer">
-                                <div class="loading-placeholder">Loading compatibility settings...</div>
+                            <div id="ratingWeightsContainer">
+                                <div class="loading-placeholder">Loading rating weights...</div>
                             </div>
                         </div>
                     </div>
                 </div>
+
+
             </section>
         </main>
     </div>
@@ -785,19 +820,6 @@
         </div>
     </div>
 
-    <!-- Client Compatibility Modal -->
-    <div id="clientCompatibilityModal" class="modal">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h3 id="clientCompatibilityTitle">Client Compatibility</h3>
-                <button class="modal-close" onclick="closeClientCompatibilityModal()">&times;</button>
-            </div>
-            <div class="modal-body" id="clientCompatibilityContent">
-                <div class="loading-placeholder">Loading...</div>
-            </div>
-        </div>
-    </div>
-
     <!-- Track Details Modal -->
     <div id="trackDetailsModal" class="modal">
         <div class="modal-content modal-medium">
@@ -807,6 +829,19 @@
             </div>
             <div class="modal-body" id="trackDetailsContent">
                 <div class="loading-placeholder">Loading track details...</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Rating Details Modal -->
+    <div id="ratingDetailsModal" class="modal">
+        <div class="modal-content modal-medium">
+            <div class="modal-header">
+                <h3 id="ratingDetailsTitle">Rating Details</h3>
+                <button class="modal-close" onclick="closeRatingDetailsModal()">&times;</button>
+            </div>
+            <div class="modal-body" id="ratingDetailsContent">
+                <div class="loading-placeholder">Loading rating details...</div>
             </div>
         </div>
     </div>

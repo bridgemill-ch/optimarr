@@ -37,6 +37,76 @@ _No active stories at this time_
 
 ## Recent Stories
 
+### STORY-006: Rating System Overhaul - Property-Based Rating (v1.2.0)
+- **Status:** ✅ Completed
+- **Priority:** High
+- **Started:** 2026-01-11
+- **Completed:** 2026-01-11
+- **Developer:** AI Assistant
+- **Version:** 1.2.0
+- **Description:** 
+  Completely redesigned the compatibility rating system from client-based (0-11 scale) to property-based (0-100 scale). Videos are now rated based on their media properties (codecs, containers, bit depth, HDR, etc.) rather than Jellyfin client compatibility. The system is fully configurable, allowing users to define which properties are supported/unsupported and adjust impact weights and rating thresholds.
+
+- **Database Changes:** 
+  - Automatic migration of old 0-11 ratings to new 0-100 scale
+  - Old client-based fields (DirectPlayClients, RemuxClients, TranscodeClients, ClientResults) are cleared during migration
+  - Migration runs automatically on application startup
+
+- **Migration Script:** 
+  Automatic migration logic in `DatabaseMigrationService` - no SQL script required
+
+- **UI Changes:**
+  - Rating display changed from "X/11" to "X/100" throughout the application
+  - New "Media Property Settings" section in Settings
+  - Rating Details Modal showing detailed breakdown
+  - Dashboard issues now show compatibility rating instead of transcode client count
+  - Removed client-related summary items from dashboard
+  - Removed "Jellyfin Clients" and "Client Compatibility Overrides" sections from settings
+  - Removed "Understanding Compatibility Ratings" information banner from dashboard
+  - Removed "Client Compatibility Overview" from dashboard
+
+- **API Changes:**
+  - `GetMediaPropertySettings()` now returns configurable thresholds (Optimal, Good)
+  - `SaveMediaPropertySettings()` now accepts thresholds for saving
+  - Removed `GetClientCompatibilityStats()` endpoint
+  - Dashboard endpoints no longer return client-related statistics
+  - Dashboard now uses configurable thresholds for compatibility distribution
+  - New endpoint: `POST /api/library/recalculate-compatibility` - Recalculate all video ratings when settings change
+
+- **Service Updates:**
+  - **New Service:** `MediaPropertyRatingService` - Handles all rating calculations
+    - `CalculateRating()` - Calculate 0-100 rating based on media properties
+    - `LoadMediaPropertySettings()` - Load supported/unsupported property settings
+    - `LoadRatingWeights()` - Load configurable impact weights
+    - `LoadRatingThresholds()` - Load configurable rating thresholds
+  - **Removed Service:** `JellyfinCompatibilityData` - Deleted hardcoded client compatibility matrix
+  - **Updated Service:** `VideoAnalyzerService` - Now delegates rating calculation to MediaPropertyRatingService
+  - **Updated Service:** `DatabaseMigrationService` - Added automatic rating migration logic
+
+- **New Models:**
+  - `MediaPropertySettings` - Configurable supported/unsupported properties
+  - `RatingWeights` - Configurable impact weights for different property types
+  - `RatingThresholds` - Configurable thresholds (Optimal, Good)
+
+- **Documentation Updates:**
+  - Updated CHANGELOG.md with comprehensive v1.2.0 release notes
+  - Updated ARCHITECTURE.md with MediaPropertyRatingService documentation
+  - Updated PRD.md version and date
+  - Updated DEVELOPER_GUIDE.md version and date
+  - Updated STORY_TRACKING.md with this story
+
+- **Testing:**
+  - Verified rating migration from 0-11 to 0-100 scale
+  - Verified configurable settings work correctly
+  - Verified rating calculations match expected behavior
+  - Verified UI updates display correctly
+  - Verified backward compatibility with old ratings
+
+- **Notes:**
+  This is a major architecture change that fundamentally alters how compatibility is calculated. The new system is more flexible and user-configurable, allowing users to define their own compatibility criteria rather than relying on hardcoded client compatibility data. Old ratings are automatically migrated to the new system on startup.
+
+---
+
 ### STORY-005: ProcessingStatus Migration Auto-Detection (v1.1.4)
 - **Status:** ✅ Completed
 - **Priority:** High
@@ -379,12 +449,12 @@ _No active stories at this time_
 
 | Status | Count |
 |--------|-------|
-| ✅ Completed | 3 |
+| ✅ Completed | 4 |
 | 🟡 In Progress | 0 |
 | 🔴 Blocked | 0 |
 | ⏸️ On Hold | 0 |
 
-**Total Stories:** 3
+**Total Stories:** 4
 
 ---
 
@@ -392,7 +462,10 @@ _No active stories at this time_
 
 | Version | Release Date | Stories | Description |
 |---------|--------------|---------|-------------|
-| 1.1.2 | 2025-01-XX | STORY-002 | Progress bar for video matching with Sonarr/Radarr |
+| 1.2.0 | 2026-01-11 | STORY-006 | Rating System Overhaul - Property-Based Rating (0-100 scale) |
+| 1.1.4 | 2025-01-09 | STORY-005 | ProcessingStatus Migration Auto-Detection |
+| 1.1.3 | 2025-01-09 | STORY-004 | Database Migration System Fixes |
+| 1.1.2 | 2025-01-XX | STORY-002, STORY-003 | Progress bar for video matching, Basic Auth support |
 | 1.1.1 | 2025-01-XX | - | UI Bug Fix: Checkbox overlap with tags |
 | 1.1.0 | 2025-01-XX | STORY-001 | Servarr Video Matching Integration |
 | 1.0.0 | 2025-01-XX | STORY-000 | Initial Release |

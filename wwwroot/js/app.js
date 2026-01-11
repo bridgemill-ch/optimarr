@@ -3,34 +3,14 @@ import { initNavigation } from './navigation.js';
 import { loadDashboard } from './dashboard.js';
 import { loadKnownLibraries, loadRecentScans, startScanPolling, reconnectToRunningScans, startProcessingCountPolling, loadProcessingVideos } from './library.js';
 import { loadBrowseFilterOptions, loadBrowseMedia, setupBrowseEventListeners } from './browse.js';
-import { loadRatingSettings, loadCompatibilitySettings, saveSettings, loadJellyfinSettings, loadSonarrSettings, loadRadarrSettings, loadSonarrPathMappings, loadRadarrPathMappings } from './settings.js';
+import { loadJellyfinSettings, loadSonarrSettings, loadRadarrSettings, loadSonarrPathMappings, loadRadarrPathMappings } from './settings.js';
 import { loadServarrStatus, checkActiveMatches } from './servarr.js';
 import { showAddLibraryModal, closeAddLibraryModal } from './library-modals.js';
-import { closeMediaModal, closeClientCompatibilityModal, closeTrackDetailsModal } from './media-info.js';
+import { closeMediaModal, closeTrackDetailsModal, closeRatingDetailsModal } from './media-info.js';
 import { closePathBrowser as closePathBrowserModal } from './path-browser.js';
 import { checkMigrationStatus } from './migration.js';
 
-// Rating Info Box Functions
-function closeRatingInfoBox() {
-    const infoBox = document.getElementById('ratingInfoBox');
-    if (infoBox) {
-        infoBox.classList.add('hidden');
-        // Save state to sessionStorage (will reset after browser session ends)
-        sessionStorage.setItem('ratingInfoBoxClosed', 'true');
-    }
-}
-
-function checkRatingInfoBoxState() {
-    // Use sessionStorage instead of localStorage so banner shows again after browser restart
-    const isClosed = sessionStorage.getItem('ratingInfoBoxClosed') === 'true';
-    const infoBox = document.getElementById('ratingInfoBox');
-    if (infoBox && isClosed) {
-        infoBox.classList.add('hidden');
-    } else if (infoBox) {
-        // Ensure the box is visible if not closed in this session
-        infoBox.classList.remove('hidden');
-    }
-}
+// Rating Info Box Functions - Removed (banner no longer exists)
 
 // System Functions
 async function loadAppVersion() {
@@ -102,14 +82,6 @@ document.addEventListener('DOMContentLoaded', function() {
     initNavigation();
     
     // Rating settings form
-    const ratingSettingsForm = document.getElementById('ratingSettingsForm');
-    if (ratingSettingsForm) {
-        ratingSettingsForm.addEventListener('submit', async function(e) {
-            e.preventDefault();
-            await saveSettings();
-        });
-    }
-    
     // Load Servarr status on page load
     loadServarrStatus();
     
@@ -120,9 +92,6 @@ document.addEventListener('DOMContentLoaded', function() {
     
     // Load dashboard on page load
     loadDashboard();
-    
-    // Load rating settings on page load
-    loadRatingSettings();
     
     // Load Jellyfin settings on page load
     loadJellyfinSettings();
@@ -148,9 +117,6 @@ document.addEventListener('DOMContentLoaded', function() {
         loadBrowseMedia();
         setupBrowseEventListeners();
     }
-    
-    // Check if rating info box should be hidden
-    checkRatingInfoBoxState();
     
     // Check migration status on startup
     checkMigrationStatus();
@@ -198,21 +164,20 @@ document.addEventListener('DOMContentLoaded', function() {
     }
     
     // Close modals when clicking outside
-    window.onclick = function(event) {
+    document.addEventListener('click', function(event) {
         const mediaModal = document.getElementById('mediaInfoModal');
         const addModal = document.getElementById('addLibraryModal');
         const pathModal = document.getElementById('pathBrowserModal');
-        const clientModal = document.getElementById('clientCompatibilityModal');
         const trackModal = document.getElementById('trackDetailsModal');
+        const ratingModal = document.getElementById('ratingDetailsModal');
         if (event.target === mediaModal) closeMediaModal();
         if (event.target === trackModal) closeTrackDetailsModal();
         if (event.target === addModal) closeAddLibraryModal();
         if (event.target === pathModal) closePathBrowserModal();
-        if (event.target === clientModal) closeClientCompatibilityModal();
-    };
+        if (event.target === ratingModal) closeRatingDetailsModal();
+    });
 });
 
-// Export to window for global access
-window.closeRatingInfoBox = closeRatingInfoBox;
 // Removed handleReboot export - reboot button removed from UI
+// Removed closeRatingInfoBox export - banner removed from UI
 

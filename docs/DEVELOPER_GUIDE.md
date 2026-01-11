@@ -1,8 +1,8 @@
 # Developer Guide
 ## Optimarr - Media Optimization Platform
 
-**Version:** 1.1.0  
-**Last Updated:** 2025-01-XX  
+**Version:** 1.2.0  
+**Last Updated:** 2026-01-11  
 **Application Version:** See [CHANGELOG.md](CHANGELOG.md)
 
 ---
@@ -217,9 +217,15 @@ VideoAnalyzerService.AnalyzeVideoAsync()
     ↓
 MediaInfo CLI (extract metadata)
     ↓
-JellyfinCompatibilityData (match codecs)
+MediaPropertyRatingService.CalculateRating()
     ↓
-Calculate Compatibility Score
+Load Media Property Settings, Rating Weights & Rating Thresholds
+    ↓
+Calculate Rating (0-100) based on properties
+    ↓
+Apply configurable thresholds to determine Optimal/Good/Poor classification
+    ↓
+Generate Issues & Recommendations
     ↓
 Generate CompatibilityResult
     ↓
@@ -228,8 +234,9 @@ Return to Client
 
 **Key Files:**
 - `Services/VideoAnalyzerService.cs`: Main analysis logic
-- `Services/JellyfinCompatibilityData.cs`: Compatibility matrix
+- `Services/MediaPropertyRatingService.cs`: Property-based rating calculation
 - `Models/CompatibilityResult.cs`: Result data structure
+- `Models/MediaPropertySettings.cs`: Property settings, weights, and thresholds
 
 ### 3.2 Library Scanning Flow
 

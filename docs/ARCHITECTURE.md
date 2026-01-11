@@ -1,8 +1,8 @@
 # System Architecture Document
 ## Optimarr - Media Optimization Platform
 
-**Version:** 1.1.2  
-**Last Updated:** 2025-01-XX  
+**Version:** 1.2.0  
+**Last Updated:** 2026-01-11  
 **Status:** Active Development  
 **Application Version:** See [CHANGELOG.md](CHANGELOG.md)
 
@@ -39,6 +39,7 @@ Optimarr follows a **layered architecture** pattern with clear separation betwee
 │  ┌───────────────────────▼───────────────────────────────┐   │
 │  │              Services Layer                           │   │
 │  │  - VideoAnalyzerService                              │   │
+│  │  - MediaPropertyRatingService                        │   │
 │  │  - LibraryScannerService                             │   │
 │  │  - SonarrService / RadarrService                     │   │
 │  │  - ServarrSyncService                                │   │
@@ -125,7 +126,6 @@ wwwroot/
 **PlaybackController**
 - Manages Jellyfin playback history
 - Provides playback statistics
-- Handles client compatibility data
 
 **ServarrController**
 - Manages Sonarr/Radarr integration
@@ -152,16 +152,28 @@ wwwroot/
 
 **VideoAnalyzerService**
 - **Purpose:** Analyze video files for compatibility
-- **Dependencies:** MediaInfo CLI, JellyfinCompatibilityData, IConfiguration
+- **Dependencies:** MediaInfo CLI, MediaPropertyRatingService, IConfiguration
 - **Key Methods:**
   - `AnalyzeVideoAsync()`: Main analysis method
-  - `GetCompatibilityResult()`: Calculate compatibility scores
-  - `GetEnabledClients()`: Get active clients from config
+  - `RecalculateCompatibility()`: Recalculate compatibility using new rating system
 - **Responsibilities:**
   - Extract video metadata using MediaInfo
-  - Match codecs against Jellyfin compatibility matrix
-  - Calculate compatibility scores (0-11)
-  - Generate detailed compatibility reports
+  - Delegate rating calculation to MediaPropertyRatingService
+  - Generate detailed compatibility reports with issues and recommendations
+
+**MediaPropertyRatingService**
+- **Purpose:** Calculate compatibility ratings based on media properties
+- **Dependencies:** IConfiguration, ILogger
+- **Key Methods:**
+  - `CalculateRating()`: Calculate 0-100 rating based on media properties
+  - `LoadMediaPropertySettings()`: Load supported/unsupported property settings
+  - `LoadRatingWeights()`: Load configurable impact weights
+  - `LoadRatingThresholds()`: Load configurable rating thresholds (Optimal, Good)
+- **Responsibilities:**
+  - Start with perfect score (100) and deduct points for unsupported properties
+  - Apply configurable weights for different property types
+  - Penalize stereo sound (≤2 channels) and SDR content (no HDR)
+  - Generate issues and recommendations based on property analysis
 
 **VideoServarrMatcherService** (v1.1.0, updated v1.1.2)
 - **Purpose:** Match video files with Sonarr/Radarr metadata
@@ -239,12 +251,10 @@ wwwroot/
 - **Dependencies:** HttpClient, IConfiguration, ILogger
 - **Key Methods:**
   - `GetPlaybackHistoryAsync()`: Fetch playback records
-  - `GetClientsAsync()`: Fetch client information
   - `TestConnectionAsync()`: Verify API connectivity
 - **Responsibilities:**
   - HTTP communication with Jellyfin API
   - Playback history synchronization
-  - Client compatibility data management
 
 #### 2.3.2 Background Services
 
@@ -403,19 +413,38 @@ User Action → Controller → Service → Database
       "PathMappings": [...]
     }
   },
+  "MediaPropertySettings": {
+    "VideoCodecs": {
+      "H.264": true,
+      "H.265": true,
+      "AV1": false
+    },
+    "AudioCodecs": {
+      "AAC": true,
+      "MP3": true,
+      "AC3": false
+    },
+    "Containers": {
+      "MP4": true,
+      "MKV": true
+    }
+  },
+  "RatingWeights": {
+    "UnsupportedVideoCodec": 35,
+    "UnsupportedAudioCodec": 25,
+    "UnsupportedContainer": 30,
+    "UnsupportedBitDepth": 18,
+    "UnsupportedSubtitleFormat": 8,
+    "HDR": 8,
+    "SurroundSound": 3,
+    "HighBitrate": 5,
+    "IncorrectCodecTag": 12,
+    "HighBitrateThresholdMbps": 40.0
+  },
   "Jellyfin": {
     "BaseUrl": "http://jellyfin:8096",
     "ApiKey": "...",
     "Enabled": true
-  },
-  "CompatibilityRating": {
-    "OptimalDirectPlayThreshold": 8,
-    "GoodDirectPlayThreshold": 5,
-    "GoodCombinedThreshold": 8,
-    "DisabledClients": {
-      "Android": false,
-      "iOS": false
-    }
   }
 }
 ```
@@ -610,4 +639,5 @@ optimarr:latest
 
 | Version | Date | Author | Changes |
 |---------|------|--------|---------|
+| 1.2.0 | 2026-01-11 | AI Assistant | Updated for v1.2.0: Added MediaPropertyRatingService, removed JellyfinCompatibilityData, updated rating system documentation |
 | 1.0 | 2025-01-XX | AI Assistant | Initial architecture document following B-MAD methodology |

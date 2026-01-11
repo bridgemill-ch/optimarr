@@ -111,37 +111,7 @@ namespace Optimarr.Services
                 _ => "?"
             };
             report.AppendLine($"{scoreSymbol} {compatibilityResult.OverallScore}");
-            report.AppendLine();
-            report.AppendLine($"Direct Play: {compatibilityResult.ClientResults.Values.Count(r => r.Status == "Direct Play")} clients");
-            report.AppendLine($"Remux: {compatibilityResult.ClientResults.Values.Count(r => r.Status == "Remux")} clients");
-            report.AppendLine($"Transcode: {compatibilityResult.ClientResults.Values.Count(r => r.Status == "Transcode")} clients");
-            report.AppendLine();
-
-            // Per-Client Breakdown
-            report.AppendLine("PER-CLIENT COMPATIBILITY");
-            report.AppendLine("-".PadRight(80, '-'));
-            foreach (var client in JellyfinCompatibilityData.AllClients)
-            {
-                if (compatibilityResult.ClientResults.TryGetValue(client, out var clientResult))
-                {
-                    var statusSymbol = clientResult.Status switch
-                    {
-                        "Direct Play" => "✓",
-                        "Remux" => "~",
-                        "Transcode" => "✗",
-                        _ => "?"
-                    };
-                    report.AppendLine($"{statusSymbol} {client}: {clientResult.Status}");
-                    if (!string.IsNullOrEmpty(clientResult.Reason) && clientResult.Reason != "All components supported")
-                    {
-                        report.AppendLine($"    Reason: {clientResult.Reason}");
-                    }
-                    foreach (var warning in clientResult.Warnings)
-                    {
-                        report.AppendLine($"    Warning: {warning}");
-                    }
-                }
-            }
+            report.AppendLine($"Rating: {compatibilityResult.CompatibilityRating}/100");
             report.AppendLine();
 
             // Issues

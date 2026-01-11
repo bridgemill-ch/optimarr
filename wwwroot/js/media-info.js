@@ -1,5 +1,5 @@
 // Media Info Modal Functions
-import { escapeHtml, formatFileSize, formatDuration, formatTimeSpan } from './utils.js';
+import { escapeHtml, formatFileSize, formatDuration, formatTimeSpan, getRatingCategory } from './utils.js';
 
 export function getNonOptimalFields(video) {
     const nonOptimal = {
@@ -45,9 +45,11 @@ export function getNonOptimalFields(video) {
                 nonOptimal.bitDepth = true;
             }
             
-            // HDR issues
-            if (issueLower.includes('hdr') || issueLower.includes('tone-mapping')) {
-                nonOptimal.hdr = true;
+            // HDR/SDR issues - but these are visual quality, not compatibility issues
+            // We track them but won't show compatibility warning icon
+            if (issueLower.includes('sdr') && issueLower.includes('visual quality')) {
+                // SDR content is a visual quality issue, not a compatibility issue
+                // We'll handle this separately in the display
             }
             
             // Audio issues - check for specific problematic codecs or general audio codec issues
@@ -137,21 +139,7 @@ export async function showMediaInfo(videoId) {
         // Determine which fields are non-optimal
         const nonOptimal = getNonOptimalFields(video);
         
-        // Helper to create info item with optional warning
-        const createInfoItem = (label, value, isNonOptimal = false) => {
-            const warningIcon = isNonOptimal ? '<span class="warning-icon" title="This field may cause compatibility issues">⚠️</span>' : '';
-            return `
-                <div class="info-item ${isNonOptimal ? 'non-optimal' : ''}">
-                    <span class="info-label">${escapeHtml(label)}:</span>
-                    <span class="info-value">
-                        ${warningIcon}
-                        ${value}
-                    </span>
-                </div>
-            `;
-        };
-        
-        // Parse issues and recommendations if available
+        // Parse issues and recommendations if available (must be done before using issuesList)
         let issuesList = [];
         let recommendationsList = [];
         try {
@@ -171,10 +159,132 @@ export async function showMediaInfo(videoId) {
             // Silently handle parsing errors - issues/recommendations are optional
         }
         
+        // Helper to create info item with optional warning
+        const createInfoItem = (label, value, isNonOptimal = false, isVisualQuality = false) => {
+            let warningIcon = '';
+            if (isNonOptimal) {
+                if (isVisualQuality) {
+                    // Visual quality issues (like SDR) get a different icon/message
+                    warningIcon = '<span class="warning-icon" title="This field may have reduced visual quality compared to alternatives" style="opacity: 0.7;">💡</span>';
+                } else {
+                    // Compatibility issues get the standard warning
+                    warningIcon = '<span class="warning-icon" title="This field may cause compatibility issues">⚠️</span>';
+                }
+            }
+            return `
+                <div class="info-item ${isNonOptimal ? 'non-optimal' : ''}">
+                    <span class="info-label">${escapeHtml(label)}:</span>
+                    <span class="info-value">
+                        ${warningIcon}
+                        ${value}
+                    </span>
+                </div>
+            `;
+        };
+        
+        // Check if HDR/SDR is a visual quality issue (not compatibility)
+        // The backend message is: "SDR content may have reduced visual quality compared to HDR"
+        const isHDRVisualQualityIssue = issuesList.some(issue => {
+            const issueLower = issue.toLowerCase();
+            return issueLower.includes('sdr') && (issueLower.includes('visual quality') || issueLower.includes('reduced visual quality'));
+        });
+        
         // Format audio codecs as a list
+        // Check each codec individually to see if it's problematic
         const audioCodecsList = video.audioCodecs ? video.audioCodecs.split(',').map(c => c.trim()).filter(c => c) : [];
+        const problematicAudioCodecs = new Set();
+        
+        // Normalize codec names for matching (remove hyphens, spaces, dots, etc.)
+        const normalizeCodecName = (name) => {
+            let normalized = name.toLowerCase().replace(/[-\s\.]/g, '');
+            // Handle equivalent codec names
+            // EC-3 and E-AC-3 are the same (Enhanced AC-3), normalize both to 'eac3'
+            if (normalized === 'ec3' || normalized === 'eac3') {
+                normalized = 'eac3';
+            }
+            return normalized;
+        };
+        
+        // Check issues for specific problematic codecs
+        issuesList.forEach(issue => {
+            const issueLower = issue.toLowerCase();
+            let issueNormalized = normalizeCodecName(issue); // Normalize the entire issue for better matching
+            // Also normalize common codec variations in issue text for matching
+            // Replace "ec3" with "eac3" in issue text since they're equivalent (EC-3 = E-AC-3)
+            issueNormalized = issueNormalized.replace(/ec3/g, 'eac3');
+            const isAudioIssue = issueLower.includes('audio') && 
+                (issueLower.includes('not supported') || 
+                 issueLower.includes('unsupported') || 
+                 issueLower.includes('transcoding') ||
+                 issueLower.includes('codec not supported') ||
+                 issueLower.includes('audio codec not supported'));
+            
+            if (!isAudioIssue) return;
+            
+            // Check each codec against the issue using normalized matching
+            audioCodecsList.forEach(codec => {
+                const codecLower = codec.toLowerCase();
+                const normalizedCodec = normalizeCodecName(codec);
+                
+                // Strategy 1: Direct match (case-insensitive) in original issue text
+                if (issueLower.includes(codecLower)) {
+                    problematicAudioCodecs.add(codec);
+                    return;
+                }
+                
+                // Strategy 2: Normalized codec name in normalized issue text
+                // This handles cases like "ec-3" in issue matching "EC-3" codec
+                if (issueNormalized.includes(normalizedCodec)) {
+                    problematicAudioCodecs.add(codec);
+                    return;
+                }
+                
+                // Strategy 3: Check if normalized codec appears as substring in normalized issue
+                // This handles partial matches and variations
+                if (normalizedCodec.length >= 2 && issueNormalized.includes(normalizedCodec)) {
+                    problematicAudioCodecs.add(codec);
+                }
+            });
+            
+            // Also check for known problematic codec patterns
+            // DTS (but not DTS-HD)
+            if (issueNormalized.includes('dts') && !issueNormalized.includes('dtshd')) {
+                audioCodecsList.forEach(codec => {
+                    const codecNormalized = normalizeCodecName(codec);
+                    if (codecNormalized.includes('dts') && !codecNormalized.includes('dtshd')) {
+                        problematicAudioCodecs.add(codec);
+                    }
+                });
+            }
+            // AC3, EAC3, EC-3, E-AC-3 (all variations)
+            // Check normalized issue for any AC3/EAC3/EC-3 pattern
+            // Note: EC-3 and E-AC-3 are the same codec, both normalize to 'eac3'
+            // After normalization, "ec3" in issue text is replaced with "eac3"
+            if (issueNormalized.includes('ac3') || issueNormalized.includes('eac3')) {
+                audioCodecsList.forEach(codec => {
+                    const codecNormalized = normalizeCodecName(codec);
+                    // Match AC3 (normalizes to 'ac3')
+                    // Match EAC3/E-AC-3/EC-3 (all normalize to 'eac3' after equivalence handling)
+                    if (codecNormalized === 'ac3' || codecNormalized === 'eac3') {
+                        problematicAudioCodecs.add(codec);
+                    }
+                });
+            }
+            // ALAC
+            if (issueNormalized.includes('alac')) {
+                audioCodecsList.forEach(codec => {
+                    if (normalizeCodecName(codec).includes('alac')) {
+                        problematicAudioCodecs.add(codec);
+                    }
+                });
+            }
+        });
+        
         const audioCodecsDisplay = audioCodecsList.length > 0 
-            ? audioCodecsList.map(codec => `<span class="codec-tag ${nonOptimal.audioCodecs ? 'non-optimal' : ''}">${escapeHtml(codec)}</span>`).join(' ')
+            ? audioCodecsList.map(codec => {
+                const isProblematic = problematicAudioCodecs.has(codec);
+                return `<span class="codec-tag ${isProblematic ? 'non-optimal' : ''}">${escapeHtml(codec)}</span>`;
+            }).join(' ')
             : 'None';
         
         // Check for audio track warnings (missing language)
@@ -229,10 +339,158 @@ export async function showMediaInfo(videoId) {
             (video.width >= video.height ? `${(video.width / video.height).toFixed(2)}:1` : `1:${(video.height / video.width).toFixed(2)}`) : 'N/A';
         
         // Calculate bitrate estimate (if file size and duration are available)
+        // Formula: (fileSize in bytes * 8 bits/byte) / (duration in seconds * 1,000,000 bits/Mbps) = Mbps
+        // Note: 1 Mbps = 1,000,000 bits per second
+        // Also correct the duration value if it seems wrong (for display purposes)
         let estimatedBitrate = 'N/A';
+        let correctedDuration = video.duration; // Use corrected duration for display
+        
+        // First, check if duration is extremely suspicious (< 10 seconds) - always try correction
+        if (video.duration && video.duration > 0 && video.duration < 10 && video.fileSize) {
+            // For durations < 10 seconds, almost certainly wrong - try multiplying by 1000
+            const testDuration = video.duration * 1000.0;
+            const testBps = (video.fileSize * 8) / testDuration;
+            const testMbps = testBps / 1000000;
+            
+            // If the corrected duration gives a reasonable bitrate (< 2000 Mbps) and duration >= 10 seconds, use it
+            if (testMbps < 2000 && testMbps > 0 && testDuration >= 10) {
+                correctedDuration = testDuration;
+                console.log(`Auto-correcting extremely short duration: ${video.duration}s -> ${correctedDuration}s (bitrate: ${testMbps.toFixed(2)} Mbps)`);
+            }
+        }
+        
         if (video.fileSize && video.duration && video.duration > 0) {
-            const bitrateMbps = ((video.fileSize * 8) / (video.duration * 1000000)).toFixed(2);
-            estimatedBitrate = `${bitrateMbps} Mbps`;
+            let durationSeconds = correctedDuration; // Start with corrected duration if available
+            
+            // Calculate initial bitrate to check if duration unit is correct
+            const initialBps = (video.fileSize * 8) / durationSeconds;
+            const initialMbps = initialBps / 1000000;
+            
+            // Check if duration seems wrong based on file size and bitrate
+            // Multiple heuristics to catch different cases:
+            // 1. Bitrate is unreasonably high (> 1000 Mbps)
+            // 2. Duration is very small (< 100 seconds) for a large file (> 100MB)
+            // 3. Duration is suspiciously small (< 60 seconds) for any video file
+            // 4. Duration seems too short relative to file size (heuristic: fileSize/duration ratio)
+            // 5. Duration is very small (< 10 seconds) - almost certainly wrong for any video
+            const isLargeFile = video.fileSize > 100 * 1024 * 1024; // > 100MB
+            const isSuspiciouslyShort = durationSeconds < 100 && isLargeFile;
+            const isBitrateTooHigh = initialMbps > 1000;
+            const isVeryShortForAnyFile = durationSeconds < 60; // Most videos are at least 1 minute
+            const isExtremelyShort = durationSeconds < 10; // Almost certainly wrong
+            
+            // Additional heuristic: if file size per second is unreasonably high (> 50MB/s), duration might be wrong
+            // This catches cases where duration is wrong but bitrate calculation doesn't trigger
+            const bytesPerSecond = video.fileSize / durationSeconds;
+            const mbPerSecond = bytesPerSecond / (1024 * 1024);
+            const isUnreasonableFileSizePerSecond = mbPerSecond > 50; // > 50 MB/s is very high
+            
+            // Try correction if any suspicious condition is met
+            if (isBitrateTooHigh || isSuspiciouslyShort || isVeryShortForAnyFile || isUnreasonableFileSizePerSecond || isExtremelyShort) {
+                // Duration is likely in wrong unit
+                if (isBitrateTooHigh) {
+                    console.warn(`Bitrate ${initialMbps.toFixed(2)} Mbps seems too high. Duration ${durationSeconds} might be in wrong unit.`);
+                } else if (isSuspiciouslyShort) {
+                    console.warn(`Duration ${durationSeconds}s seems too short for file size ${(video.fileSize / (1024*1024)).toFixed(2)}MB. Duration might be in wrong unit.`);
+                } else if (isVeryShortForAnyFile) {
+                    console.warn(`Duration ${durationSeconds}s seems suspiciously short (< 60s) for a video file. Duration might be in wrong unit.`);
+                } else if (isUnreasonableFileSizePerSecond) {
+                    console.warn(`File size per second ${mbPerSecond.toFixed(2)}MB/s seems unreasonably high. Duration ${durationSeconds}s might be in wrong unit.`);
+                }
+                
+                // Try different conversions
+                // Option 1: If duration < 1, it might be in milliseconds -> divide by 1000
+                // Option 2: If duration is small (1-100 seconds) but file is large, maybe it's actually in milliseconds -> multiply by 1000
+                // Option 3: If duration is very small (< 0.01), it might be in microseconds -> divide by 1,000,000
+                
+                let foundCorrection = false;
+                
+                if (durationSeconds < 0.01) {
+                    // Very small - might be in microseconds
+                    const testDuration = video.duration * 1000.0;
+                    const testBps = (video.fileSize * 8) / testDuration;
+                    const testMbps = testBps / 1000000;
+                    if (testMbps < 1000 && testMbps > 0) {
+                        durationSeconds = testDuration;
+                        correctedDuration = durationSeconds;
+                        foundCorrection = true;
+                        console.log(`Trying microseconds conversion: ${video.duration} * 1000 = ${durationSeconds} seconds`);
+                    }
+                } else if (durationSeconds < 1) {
+                    // Less than 1 second - might be in milliseconds
+                    const testDuration = video.duration / 1000.0;
+                    const testBps = (video.fileSize * 8) / testDuration;
+                    const testMbps = testBps / 1000000;
+                    if (testMbps < 1000 && testMbps > 0) {
+                        durationSeconds = testDuration;
+                        correctedDuration = durationSeconds;
+                        foundCorrection = true;
+                        console.log(`Trying milliseconds conversion: ${video.duration} / 1000 = ${durationSeconds} seconds`);
+                    }
+                } else if (durationSeconds < 100 || isUnreasonableFileSizePerSecond || isExtremelyShort) {
+                    // Small duration (1-100 seconds) OR unreasonable file size per second OR extremely short
+                    // Maybe duration is actually in milliseconds - try multiplying by 1000
+                    const alternativeDuration = video.duration * 1000.0;
+                    const alternativeBps = (video.fileSize * 8) / alternativeDuration;
+                    const alternativeMbps = alternativeBps / 1000000;
+                    const alternativeMbPerSecond = (video.fileSize / alternativeDuration) / (1024 * 1024);
+                    
+                    // For extremely short durations (< 10s), be more lenient with validation
+                    // Accept the correction if:
+                    // 1. Bitrate becomes reasonable (< 1000 Mbps)
+                    // 2. The alternative duration is at least 60 seconds (more reasonable for videos)
+                    //    OR if original was extremely short, accept if alternative is at least 10 seconds
+                    // 3. The alternative bitrate is > 0 (valid)
+                    // 4. File size per second becomes more reasonable (< 50 MB/s)
+                    const minAcceptableDuration = isExtremelyShort ? 10 : 60;
+                    if (alternativeMbps < 1000 && alternativeMbps > 0 && alternativeDuration >= minAcceptableDuration && alternativeMbPerSecond < 50) {
+                        durationSeconds = alternativeDuration;
+                        correctedDuration = durationSeconds;
+                        foundCorrection = true;
+                        console.log(`Trying reverse conversion (duration was incorrectly converted): ${video.duration} * 1000 = ${durationSeconds} seconds`);
+                    } else if (isExtremelyShort && alternativeDuration >= 10) {
+                        // For extremely short durations, be even more lenient - just check if it's at least 10 seconds
+                        // and bitrate is reasonable
+                        if (alternativeMbps < 2000 && alternativeMbps > 0) {
+                            durationSeconds = alternativeDuration;
+                            correctedDuration = durationSeconds;
+                            foundCorrection = true;
+                            console.log(`Trying reverse conversion (extremely short duration, lenient check): ${video.duration} * 1000 = ${durationSeconds} seconds`);
+                        }
+                    }
+                }
+                
+                // Recalculate with corrected duration
+                const recalculatedBps = (video.fileSize * 8) / durationSeconds;
+                const recalculatedMbps = recalculatedBps / 1000000;
+                
+                // If still unreasonably high, the duration value is likely corrupted
+                if (recalculatedMbps > 1000 && foundCorrection) {
+                    console.error(`Bitrate ${recalculatedMbps.toFixed(2)} Mbps is still unreasonably high after conversion attempts. Duration value may be corrupted.`);
+                    console.error(`FileSize=${video.fileSize} bytes, OriginalDuration=${video.duration}, FinalDuration=${durationSeconds}`);
+                    // Show "N/A" or a warning instead of an impossible value
+                    estimatedBitrate = 'N/A (invalid duration)';
+                    correctedDuration = video.duration; // Revert to original
+                } else {
+                    estimatedBitrate = `${recalculatedMbps.toFixed(2)} Mbps`;
+                    // correctedDuration already set above if foundCorrection is true
+                }
+            } else {
+                // Bitrate is reasonable, use as-is
+                estimatedBitrate = `${initialMbps.toFixed(2)} Mbps`;
+            }
+            
+            // Always use the final durationSeconds value (which may have been corrected)
+            // This ensures correctedDuration matches what was used in bitrate calculation
+            correctedDuration = durationSeconds;
+            
+            // Debug logging
+            if (estimatedBitrate !== 'N/A (invalid duration)') {
+                console.log(`Bitrate calculation: FileSize=${video.fileSize} bytes, Duration=${durationSeconds} seconds, Bitrate=${estimatedBitrate}`);
+                if (correctedDuration !== video.duration) {
+                    console.log(`Duration corrected for display: ${video.duration}s -> ${correctedDuration}s`);
+                }
+            }
         }
         
         // Format analyzed date
@@ -301,7 +559,12 @@ export async function showMediaInfo(videoId) {
                 <div class="info-section">
                     <h4>File Information</h4>
                     ${createInfoItem('File Name', escapeHtml(video.fileName || 'N/A'), false)}
-                    ${createInfoItem('File Path', escapeHtml(video.filePath || 'N/A'), false)}
+                    <div class="info-item" data-field="file-path">
+                        <span class="info-label">File Path:</span>
+                        <span class="info-value" style="word-break: break-all; overflow-wrap: anywhere; text-align: left; justify-content: flex-start; max-width: 100%; white-space: normal;">
+                            <code style="font-size: 0.875rem; color: var(--text-secondary);">${escapeHtml(video.filePath || 'N/A')}</code>
+                        </span>
+                    </div>
                     ${createInfoItem('File Size', formatFileSize(video.fileSize || 0), false)}
                     ${createInfoItem('Container', escapeHtml(video.container || 'NULL'), nonOptimal.container)}
                     <div class="info-item">
@@ -321,8 +584,8 @@ export async function showMediaInfo(videoId) {
                     ${createInfoItem('Aspect Ratio', displayAspectRatio, false)}
                     ${createInfoItem('Frame Rate', video.frameRate ? video.frameRate.toFixed(3) + ' fps' : 'N/A', false)}
                     ${createInfoItem('Bit Depth', `${video.bitDepth || 8}-bit`, nonOptimal.bitDepth)}
-                    ${createInfoItem('HDR', video.isHDR ? (video.hdrType || 'Yes') : 'No', nonOptimal.hdr)}
-                    ${createInfoItem('Duration', video.duration ? formatDuration(video.duration) : 'N/A', false)}
+                    ${createInfoItem('HDR', video.isHDR ? (video.hdrType || 'Yes') : 'No', isHDRVisualQualityIssue, true)}
+                    ${createInfoItem('Duration', correctedDuration && correctedDuration > 0 ? formatDuration(correctedDuration) : 'N/A', false)}
                     ${createInfoItem('Estimated Bitrate', estimatedBitrate, false)}
                     ${(video.container === 'MP4' || video.container === 'M4V' || video.container === 'MOV') 
                         ? createInfoItem('Fast Start', video.isFastStart ? 'Yes ✓' : 'No ⚠', nonOptimal.fastStart) 
@@ -362,21 +625,12 @@ export async function showMediaInfo(videoId) {
                     <div class="info-item">
                         <span class="info-label">Rating:</span>
                         <span class="info-value">
-                            <span class="rating-badge rating-${video.compatibilityRating || 0} client-compat-clickable" data-video-id="${video.id}" style="cursor: pointer;" title="Click to see client details">${video.compatibilityRating ?? 0} Direct Play</span>
-                            <span class="score-badge ${(video.overallScore || '').toLowerCase()} client-compat-clickable" data-video-id="${video.id}" style="margin-left: 0.5rem; cursor: pointer;" title="Click to see client details">${escapeHtml(video.overallScore || 'Unknown')}</span>
+                            <span class="rating-badge rating-${getRatingCategory(video.compatibilityRating ?? 0)} rating-clickable" 
+                                  style="font-size: 1.1rem; font-weight: 600; cursor: pointer; text-decoration: underline;" 
+                                  onclick="showRatingDetails(${video.id})" 
+                                  title="Click to view rating details">${video.compatibilityRating ?? 0}/100</span>
+                            <span class="score-badge ${(video.overallScore || '').toLowerCase()}" style="margin-left: 0.5rem;">${escapeHtml(video.overallScore || 'Unknown')}</span>
                         </span>
-                    </div>
-                    <div class="info-item client-compat-clickable" data-video-id="${video.id}" style="cursor: pointer;" title="Click to see client details">
-                        <span class="info-label">Direct Play:</span>
-                        <span class="info-value">${video.directPlayClients || 0} clients <span style="color: var(--text-muted); font-size: 0.75rem;">(click for details)</span></span>
-                    </div>
-                    <div class="info-item client-compat-clickable" data-video-id="${video.id}" style="cursor: pointer;" title="Click to see client details">
-                        <span class="info-label">Remux:</span>
-                        <span class="info-value">${video.remuxClients || 0} clients <span style="color: var(--text-muted); font-size: 0.75rem;">(click for details)</span></span>
-                    </div>
-                    <div class="info-item client-compat-clickable" data-video-id="${video.id}" style="cursor: pointer;" title="Click to see client details">
-                        <span class="info-label">Transcode:</span>
-                        <span class="info-value">${video.transcodeClients || 0} clients <span style="color: var(--text-muted); font-size: 0.75rem;">(click for details)</span></span>
                     </div>
                 </div>
                 
@@ -452,17 +706,6 @@ export async function showMediaInfo(videoId) {
             </div>
         `;
         
-        // Attach event listeners to client compatibility clickable elements
-        const clickableElements = content.querySelectorAll('.client-compat-clickable');
-        clickableElements.forEach(element => {
-            element.addEventListener('click', function(e) {
-                e.stopPropagation();
-                const videoId = element.getAttribute('data-video-id');
-                if (videoId) {
-                    showClientCompatibility(parseInt(videoId));
-                }
-            });
-        });
     } catch (error) {
         console.error('Error loading media info:', error);
         content.innerHTML = `<div class="error-state"><p>Error loading media information: ${escapeHtml(error.message)}</p></div>`;
@@ -474,147 +717,144 @@ export function closeMediaModal() {
     if (modal) modal.style.display = 'none';
 }
 
-export async function showClientCompatibility(videoId) {
-    const modal = document.getElementById('clientCompatibilityModal');
-    const content = document.getElementById('clientCompatibilityContent');
-    const title = document.getElementById('clientCompatibilityTitle');
+export function closeRatingDetailsModal() {
+    const modal = document.getElementById('ratingDetailsModal');
+    if (modal) modal.style.display = 'none';
+}
+
+export async function showRatingDetails(videoId) {
+    const modal = document.getElementById('ratingDetailsModal');
+    const content = document.getElementById('ratingDetailsContent');
+    const title = document.getElementById('ratingDetailsTitle');
     
     if (!modal || !content) return;
     
     modal.style.display = 'block';
-    content.innerHTML = '<div class="loading-placeholder">Loading client compatibility...</div>';
+    content.innerHTML = '<div class="loading-placeholder">Loading rating details...</div>';
     
     try {
         const response = await fetch(`/api/library/videos/${videoId}`);
         if (!response.ok) throw new Error('Failed to load video info');
         
         const video = await response.json();
-        title.textContent = escapeHtml(video.fileName || 'Client Compatibility') + ' - Client Details';
+        title.textContent = escapeHtml(video.fileName || 'Rating Details');
         
-        // Parse client results
-        let clientResults = {};
+        // Parse issues and recommendations
+        let issuesList = [];
+        let recommendationsList = [];
         try {
-            const clientResultsRaw = video.clientResults || video.ClientResults || '{}';
-            clientResults = typeof clientResultsRaw === 'string' ? JSON.parse(clientResultsRaw) : clientResultsRaw;
-        } catch (e) {
-            console.error('Error parsing client results:', e);
-            content.innerHTML = '<div class="error-state"><p>Client compatibility data not available for this video. It may need to be re-scanned.</p></div>';
-            return;
-        }
-        
-        if (!clientResults || Object.keys(clientResults).length === 0) {
-            content.innerHTML = '<div class="empty-state"><p>No client compatibility data available. The video may need to be re-scanned.</p></div>';
-            return;
-        }
-        
-        // Group clients by status
-        const directPlayClients = [];
-        const remuxClients = [];
-        const transcodeClients = [];
-        
-        Object.entries(clientResults).forEach(([client, result]) => {
-            const status = result.status || result.Status || 'Unknown';
-            const reason = result.reason || result.Reason || '';
-            let warnings = result.warnings || result.Warnings || [];
-            
-            // Ensure warnings is an array
-            if (typeof warnings === 'string') {
-                try {
-                    warnings = JSON.parse(warnings);
-                } catch {
-                    warnings = [warnings];
+            if (video.issues) {
+                const issues = typeof video.issues === 'string' ? JSON.parse(video.issues) : video.issues;
+                if (Array.isArray(issues)) {
+                    issuesList = issues;
                 }
             }
-            if (!Array.isArray(warnings)) {
-                warnings = [];
+            if (video.recommendations) {
+                const recommendations = typeof video.recommendations === 'string' ? JSON.parse(video.recommendations) : video.recommendations;
+                if (Array.isArray(recommendations)) {
+                    recommendationsList = recommendations;
+                }
             }
-            
-            // Remove duplicates and empty warnings
-            warnings = [...new Set(warnings.filter(w => w && w.trim()))];
-            
-            const clientInfo = {
-                name: client,
-                status: status,
-                reason: reason,
-                warnings: warnings
-            };
-            
-            if (status === 'Direct Play') {
-                directPlayClients.push(clientInfo);
-            } else if (status === 'Remux') {
-                remuxClients.push(clientInfo);
-            } else if (status === 'Transcode') {
-                transcodeClients.push(clientInfo);
-            }
-        });
+        } catch (e) {
+            console.error('Error parsing issues/recommendations:', e);
+        }
+        
+        const rating = video.compatibilityRating ?? 0;
+        const maxRating = 100;
+        const deductions = maxRating - rating;
+        const ratingPercent = rating;
+        
+        // Determine rating color
+        let ratingColor = 'var(--error-color)';
+        let ratingLevel = 'Poor';
+        if (rating >= 80) {
+            ratingColor = 'var(--success-color)';
+            ratingLevel = 'Optimal';
+        } else if (rating >= 60) {
+            ratingColor = 'var(--warning-color)';
+            ratingLevel = 'Good';
+        }
         
         content.innerHTML = `
-            <div class="client-compatibility-grid">
-                <div class="client-group">
-                    <h4 style="color: var(--success-color); margin-bottom: 1rem;">
-                        ✓ Direct Play (${directPlayClients.length} clients)
-                    </h4>
-                    ${directPlayClients.length > 0 
-                        ? directPlayClients.map(client => `
-                            <div class="client-item client-direct-play">
-                                <div class="client-name">${escapeHtml(client.name)}</div>
-                                ${client.reason ? `<div class="client-reason">${escapeHtml(client.reason)}</div>` : ''}
-                                ${client.warnings && client.warnings.length > 0 
-                                    ? `<div class="client-warnings">⚠️ ${client.warnings.slice(0, 3).map(w => escapeHtml(w)).join('; ')}${client.warnings.length > 3 ? ` (+${client.warnings.length - 3} more)` : ''}</div>` 
-                                    : ''}
-                            </div>
-                        `).join('')
-                        : '<div class="empty-state">No clients support Direct Play</div>'
-                    }
+            <div class="rating-details">
+                <div style="text-align: center; margin-bottom: 2rem; padding: 1.5rem; background-color: var(--bg-secondary); border-radius: 8px;">
+                    <div style="font-size: 3rem; font-weight: 700; color: ${ratingColor}; margin-bottom: 0.5rem;">
+                        ${rating}/100
+                    </div>
+                    <div style="font-size: 1.25rem; color: var(--text-secondary); margin-bottom: 0.5rem;">
+                        ${escapeHtml(video.overallScore || 'Unknown')}
+                    </div>
+                    <div style="width: 100%; height: 8px; background-color: var(--bg-tertiary); border-radius: 4px; overflow: hidden; margin-top: 1rem;">
+                        <div style="width: ${ratingPercent}%; height: 100%; background-color: ${ratingColor}; transition: width 0.3s ease;"></div>
+                    </div>
                 </div>
                 
-                <div class="client-group">
-                    <h4 style="color: var(--warning-color); margin-bottom: 1rem;">
-                        ~ Remux (${remuxClients.length} clients)
-                    </h4>
-                    ${remuxClients.length > 0 
-                        ? remuxClients.map(client => `
-                            <div class="client-item client-remux">
-                                <div class="client-name">${escapeHtml(client.name)}</div>
-                                ${client.reason ? `<div class="client-reason">${escapeHtml(client.reason)}</div>` : ''}
-                                ${client.warnings && client.warnings.length > 0 
-                                    ? `<div class="client-warnings">⚠️ ${client.warnings.slice(0, 3).map(w => escapeHtml(w)).join('; ')}${client.warnings.length > 3 ? ` (+${client.warnings.length - 3} more)` : ''}</div>` 
-                                    : ''}
-                            </div>
-                        `).join('')
-                        : '<div class="empty-state">No clients require Remux</div>'
-                    }
+                ${deductions > 0 ? `
+                <div style="margin-bottom: 2rem;">
+                    <h4 style="color: var(--text-primary); margin-bottom: 1rem;">Rating Breakdown</h4>
+                    <div style="background-color: var(--bg-secondary); border-radius: 4px; padding: 1rem;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+                            <span style="color: var(--text-primary);">Starting Rating:</span>
+                            <span style="font-weight: 600; color: var(--success-color);">100 points</span>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+                            <span style="color: var(--text-primary);">Deductions:</span>
+                            <span style="font-weight: 600; color: var(--error-color);">-${deductions} points</span>
+                        </div>
+                        <div style="border-top: 1px solid var(--border-color); margin-top: 0.5rem; padding-top: 0.5rem; display: flex; justify-content: space-between; align-items: center;">
+                            <span style="color: var(--text-primary); font-weight: 600;">Final Rating:</span>
+                            <span style="font-weight: 700; font-size: 1.25rem; color: ${ratingColor};">${rating} points</span>
+                        </div>
+                    </div>
                 </div>
+                ` : `
+                <div style="margin-bottom: 2rem; padding: 1rem; background-color: rgba(46, 204, 113, 0.1); border-left: 3px solid var(--success-color); border-radius: 4px;">
+                    <p style="margin: 0; color: var(--text-primary);">
+                        <strong>Perfect Rating!</strong> This video has no compatibility issues and received the maximum rating of 100/100.
+                    </p>
+                </div>
+                `}
                 
-                <div class="client-group">
-                    <h4 style="color: var(--danger-color); margin-bottom: 1rem;">
-                        ✗ Transcode (${transcodeClients.length} clients)
-                    </h4>
-                    ${transcodeClients.length > 0 
-                        ? transcodeClients.map(client => `
-                            <div class="client-item client-transcode">
-                                <div class="client-name">${escapeHtml(client.name)}</div>
-                                ${client.reason ? `<div class="client-reason">${escapeHtml(client.reason)}</div>` : ''}
-                                ${client.warnings && client.warnings.length > 0 
-                                    ? `<div class="client-warnings">⚠️ ${client.warnings.slice(0, 3).map(w => escapeHtml(w)).join('; ')}${client.warnings.length > 3 ? ` (+${client.warnings.length - 3} more)` : ''}</div>` 
-                                    : ''}
-                            </div>
-                        `).join('')
-                        : '<div class="empty-state">No clients require Transcode</div>'
-                    }
+                ${issuesList.length > 0 ? `
+                <div style="margin-bottom: 2rem;">
+                    <h4 style="color: var(--error-color); margin-bottom: 1rem;">⚠️ Issues Found (${issuesList.length})</h4>
+                    <ul style="margin: 0; padding-left: 1.5rem; color: var(--text-primary); line-height: 1.8;">
+                        ${issuesList.map(issue => `<li style="margin-bottom: 0.5rem;">${escapeHtml(issue)}</li>`).join('')}
+                    </ul>
+                </div>
+                ` : `
+                <div style="margin-bottom: 2rem; padding: 1rem; background-color: rgba(46, 204, 113, 0.1); border-left: 3px solid var(--success-color); border-radius: 4px;">
+                    <p style="margin: 0; color: var(--text-primary);">
+                        <strong>No Issues Found</strong> - This video has no compatibility issues.
+                    </p>
+                </div>
+                `}
+                
+                ${recommendationsList.length > 0 ? `
+                <div style="margin-bottom: 2rem;">
+                    <h4 style="color: var(--accent-color); margin-bottom: 1rem;">💡 Recommendations (${recommendationsList.length})</h4>
+                    <ul style="margin: 0; padding-left: 1.5rem; color: var(--text-primary); line-height: 1.8;">
+                        ${recommendationsList.map(rec => `<li style="margin-bottom: 0.5rem;">${escapeHtml(rec)}</li>`).join('')}
+                    </ul>
+                </div>
+                ` : ''}
+                
+                <div style="margin-top: 2rem; padding: 1rem; background-color: var(--bg-secondary); border-radius: 4px; font-size: 0.875rem; color: var(--text-secondary);">
+                    <p style="margin: 0 0 0.5rem 0;"><strong>How the rating is calculated:</strong></p>
+                    <p style="margin: 0;">
+                        Videos start with a perfect score of 100. Points are deducted for unsupported codecs, containers, 
+                        subtitle formats, bit depths, and other compatibility factors. The final rating (0-100) determines 
+                        the overall score: <strong>Optimal</strong> (≥80), <strong>Good</strong> (≥60), or <strong>Poor</strong> (&lt;60).
+                    </p>
                 </div>
             </div>
         `;
     } catch (error) {
-        console.error('Error loading client compatibility:', error);
-        content.innerHTML = `<div class="error-state"><p>Error loading client compatibility: ${escapeHtml(error.message)}</p></div>`;
+        console.error('Error loading rating details:', error);
+        content.innerHTML = `<div class="error-state"><p>Error loading rating details: ${escapeHtml(error.message)}</p></div>`;
     }
 }
 
-export function closeClientCompatibilityModal() {
-    const modal = document.getElementById('clientCompatibilityModal');
-    if (modal) modal.style.display = 'none';
-}
 
 export async function rescanVideo(videoId) {
     const button = document.getElementById('rescanVideoBtn');
@@ -871,8 +1111,9 @@ export function closeTrackDetailsModal() {
 // Export to window for onclick handlers
 window.showMediaInfo = showMediaInfo;
 window.closeMediaModal = closeMediaModal;
-window.closeClientCompatibilityModal = closeClientCompatibilityModal;
 window.closeTrackDetailsModal = closeTrackDetailsModal;
+window.closeRatingDetailsModal = closeRatingDetailsModal;
+window.showRatingDetails = showRatingDetails;
 window.rescanVideo = rescanVideo;
 window.showTrackDetails = showTrackDetails;
 

@@ -55,6 +55,16 @@ export async function loadProcessingVideos() {
         
         if (!container) return;
         
+        // Update rescan all button visibility
+        const rescanAllBtn = document.getElementById('rescanAllProcessingBtn');
+        if (rescanAllBtn) {
+            if (data.videos && data.videos.length > 0) {
+                rescanAllBtn.style.display = 'inline-flex';
+            } else {
+                rescanAllBtn.style.display = 'none';
+            }
+        }
+        
         if (!data.videos || data.videos.length === 0) {
             container.innerHTML = '<div class="empty-state"><p>No videos currently being redownloaded.</p></div>';
             return;
@@ -76,6 +86,14 @@ export async function loadProcessingVideos() {
                     <div class="processing-video-header">
                         <span class="processing-badge">⏳ Processing</span>
                         <strong>${escapeHtml(title)}</strong>
+                        <div class="processing-video-actions">
+                            <button class="btn btn-sm btn-secondary" onclick="rescanProcessingVideo(${video.id})" title="Rescan now">
+                                <span class="icon">↻</span> Rescan
+                            </button>
+                            <button class="btn btn-sm btn-danger" onclick="deleteProcessingVideo(${video.id}, '${escapeHtml(title)}')" title="Delete">
+                                <span class="icon">🗑</span> Delete
+                            </button>
+                        </div>
                     </div>
                     <div class="processing-video-details">
                         <div class="detail-row">
@@ -583,8 +601,124 @@ export async function cancelScan(scanId) {
     }
 }
 
+export async function rescanProcessingVideo(videoId) {
+    if (!confirm('Are you sure you want to rescan this video now?\n\nThis will:\n- Clear the processing status\n- Re-analyze the video file\n- Update compatibility information')) {
+        return;
+    }
+    
+    try {
+        const response = await fetch('/api/library/processing/videos/rescan', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ videoIds: [videoId] })
+        });
+        
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.error || 'Failed to rescan video');
+        }
+        
+        const result = await response.json();
+        alert(`Video rescanned successfully!`);
+        
+        // Reload processing videos list
+        loadProcessingVideos();
+        updateProcessingCount();
+    } catch (error) {
+        console.error('Error rescanning processing video:', error);
+        alert(`Error rescanning video: ${error.message}`);
+    }
+}
+
+export async function deleteProcessingVideo(videoId, videoTitle) {
+    const confirmed = confirm(`Are you sure you want to delete "${videoTitle}"?\n\nThis will permanently remove the video from the database.\n\nThis action cannot be undone.`);
+    
+    if (!confirmed) {
+        return;
+    }
+    
+    try {
+        const response = await fetch('/api/library/processing/videos/delete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ videoIds: [videoId] })
+        });
+        
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.error || 'Failed to delete video');
+        }
+        
+        const result = await response.json();
+        alert(`Video deleted successfully!`);
+        
+        // Reload processing videos list
+        loadProcessingVideos();
+        updateProcessingCount();
+    } catch (error) {
+        console.error('Error deleting processing video:', error);
+        alert(`Error deleting video: ${error.message}`);
+    }
+}
+
+export async function rescanAllProcessingVideos() {
+    try {
+        // First, get all processing video IDs
+        const response = await fetch('/api/library/processing/videos/ids');
+        if (!response.ok) throw new Error('Failed to load processing video IDs');
+        
+        const videoIds = await response.json();
+        
+        if (!videoIds || videoIds.length === 0) {
+            alert('No processing videos to rescan.');
+            return;
+        }
+        
+        const count = videoIds.length;
+        if (!confirm(`Are you sure you want to rescan all ${count} processing video(s)?\n\nThis will:\n- Clear the processing status for all videos\n- Re-analyze all video files\n- Update compatibility information\n\nThis may take a while.`)) {
+            return;
+        }
+        
+        const rescanAllBtn = document.getElementById('rescanAllProcessingBtn');
+        if (rescanAllBtn) {
+            rescanAllBtn.disabled = true;
+            rescanAllBtn.innerHTML = '<span class="icon">↻</span> Rescanning...';
+        }
+        
+        const rescanResponse = await fetch('/api/library/processing/videos/rescan', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ videoIds: videoIds })
+        });
+        
+        if (!rescanResponse.ok) {
+            const error = await rescanResponse.json();
+            throw new Error(error.error || 'Failed to rescan videos');
+        }
+        
+        const result = await rescanResponse.json();
+        alert(`Rescan completed!\n\nTotal: ${result.total}\nSuccess: ${result.success}\nFailed: ${result.failed}`);
+        
+        // Reload processing videos list
+        loadProcessingVideos();
+        updateProcessingCount();
+    } catch (error) {
+        console.error('Error rescanning all processing videos:', error);
+        alert(`Error rescanning videos: ${error.message}`);
+    } finally {
+        const rescanAllBtn = document.getElementById('rescanAllProcessingBtn');
+        if (rescanAllBtn) {
+            rescanAllBtn.disabled = false;
+            rescanAllBtn.innerHTML = '<span class="icon">↻</span> Rescan All';
+        }
+    }
+}
+
 // Export to window for onclick handlers
 window.rescanLibrary = rescanLibrary;
 window.deleteLibrary = deleteLibrary;
 window.cancelScan = cancelScan;
+window.rescanProcessingVideo = rescanProcessingVideo;
+window.deleteProcessingVideo = deleteProcessingVideo;
+window.rescanAllProcessingVideos = rescanAllProcessingVideos;
 

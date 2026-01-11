@@ -44,16 +44,16 @@ namespace Optimarr.Controllers
         }
 
         // Helper method to calculate OverallScore dynamically based on current thresholds
-        private string CalculateOverallScore(int directPlayCount, int remuxCount, string? videoCodec = null, int bitDepth = 8)
+        // Now uses 0-100 rating scale instead of client counts
+        private string CalculateOverallScore(int rating, int remuxCount = 0, string? videoCodec = null, int bitDepth = 8)
         {
-            // Get thresholds (using global thresholds for now, could be codec-specific)
-            var optimalThreshold = _configuration.GetValue<int>("CompatibilityRating:OptimalDirectPlayThreshold", 8);
-            var goodDirectThreshold = _configuration.GetValue<int>("CompatibilityRating:GoodDirectPlayThreshold", 5);
-            var goodCombinedThreshold = _configuration.GetValue<int>("CompatibilityRating:GoodCombinedThreshold", 8);
+            // Get thresholds from new media property settings
+            var ratingService = new MediaPropertyRatingService(_configuration, _logger);
+            var thresholds = ratingService.LoadRatingThresholds();
 
-            if (directPlayCount >= optimalThreshold)
+            if (rating >= thresholds.Optimal)
                 return "Optimal";
-            else if (directPlayCount >= goodDirectThreshold || (directPlayCount + remuxCount) >= goodCombinedThreshold)
+            else if (rating >= thresholds.Good)
                 return "Good";
             else
                 return "Poor";
@@ -118,18 +118,28 @@ namespace Optimarr.Controllers
         }
 
         // Recalculate compatibility for all videos in the database
-        private async Task RecalculateCompatibilityForAllVideosAsync()
+        private async Task RecalculateCompatibilityForAllVideosAsync(
+            AppDbContext? dbContext = null, 
+            VideoAnalyzerService? videoAnalyzer = null,
+            ILogger<LibraryController>? logger = null,
+            IConfiguration? configuration = null)
         {
-            _logger.LogInformation("Starting compatibility recalculation for all videos");
+            // Use provided services or fall back to injected ones
+            dbContext ??= _dbContext;
+            videoAnalyzer ??= _videoAnalyzer;
+            logger ??= _logger;
+            configuration ??= _configuration;
+
+            logger.LogInformation("Starting compatibility recalculation for all videos");
 
             try
             {
                 // Load all videos from database
-                var videos = await _dbContext.VideoAnalyses
+                var videos = await dbContext.VideoAnalyses
                     .Where(v => !v.IsBroken) // Skip broken videos
                     .ToListAsync();
 
-                _logger.LogInformation("Recalculating compatibility for {Count} videos", videos.Count);
+                logger.LogInformation("Recalculating compatibility for {Count} videos", videos.Count);
 
                 var updatedCount = 0;
                 var errorCount = 0;
@@ -147,18 +157,20 @@ namespace Optimarr.Controllers
                             // Reconstruct VideoInfo from database record
                             var videoInfo = ReconstructVideoInfo(video);
 
-                            // Recalculate compatibility using current settings
-                            var compatibilityResult = _videoAnalyzer.RecalculateCompatibility(videoInfo);
+                            // Recalculate compatibility using new media property-based rating system
+                            var compatibilityResult = videoAnalyzer.RecalculateCompatibility(videoInfo);
 
                             // Update video record with new compatibility data
-                            video.CompatibilityRating = compatibilityResult.CompatibilityRating;
-                            video.DirectPlayClients = compatibilityResult.ClientResults.Values.Count(r => r.Status == "Direct Play");
-                            video.RemuxClients = compatibilityResult.ClientResults.Values.Count(r => r.Status == "Remux");
-                            video.TranscodeClients = compatibilityResult.ClientResults.Values.Count(r => r.Status == "Transcode");
+                            video.CompatibilityRating = compatibilityResult.CompatibilityRating; // Now 0-100 scale
+                            // Clear old client-based fields (deprecated)
+                            video.DirectPlayClients = 0;
+                            video.RemuxClients = 0;
+                            video.TranscodeClients = 0;
                             video.OverallScore = ParseScore(compatibilityResult.OverallScore);
                             video.Issues = System.Text.Json.JsonSerializer.Serialize(compatibilityResult.Issues);
                             video.Recommendations = System.Text.Json.JsonSerializer.Serialize(compatibilityResult.Recommendations);
-                            video.ClientResults = System.Text.Json.JsonSerializer.Serialize(compatibilityResult.ClientResults);
+                            // Clear old ClientResults (deprecated)
+                            video.ClientResults = "{}";
 
                             // Generate new report
                             var reportGenerator = new ReportGenerator();
@@ -168,23 +180,23 @@ namespace Optimarr.Controllers
                         }
                         catch (Exception ex)
                         {
-                            _logger.LogError(ex, "Error recalculating compatibility for video ID {Id}", video.Id);
+                            logger.LogError(ex, "Error recalculating compatibility for video ID {Id}", video.Id);
                             errorCount++;
                         }
                     }
 
                     // Save batch
-                    await _dbContext.SaveChangesAsync();
-                    _logger.LogInformation("Processed batch: {Processed}/{Total} videos updated, {Errors} errors", 
+                    await dbContext.SaveChangesAsync();
+                    logger.LogInformation("Processed batch: {Processed}/{Total} videos updated, {Errors} errors", 
                         updatedCount, videos.Count, errorCount);
                 }
 
-                _logger.LogInformation("Compatibility recalculation completed: {Updated} updated, {Errors} errors", 
+                logger.LogInformation("Compatibility recalculation completed: {Updated} updated, {Errors} errors", 
                     updatedCount, errorCount);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error during compatibility recalculation");
+                logger.LogError(ex, "Error during compatibility recalculation");
                 throw;
             }
         }
@@ -260,6 +272,251 @@ namespace Optimarr.Controllers
                 _logger.LogError(ex, "Error getting processing videos");
                 return StatusCode(500, new { error = ex.Message });
             }
+        }
+
+        [HttpGet("processing/videos/ids")]
+        public async Task<ActionResult<int[]>> GetProcessingVideoIds()
+        {
+            try
+            {
+                var ids = await _dbContext.VideoAnalyses
+                    .Where(v => v.ProcessingStatus == ProcessingStatus.Processing)
+                    .Select(v => v.Id)
+                    .ToArrayAsync();
+
+                return Ok(ids);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error getting processing video IDs");
+                return StatusCode(500, new { error = ex.Message });
+            }
+        }
+
+        [HttpPost("processing/videos/rescan")]
+        public async Task<ActionResult> RescanProcessingVideos([FromBody] RedownloadRequest request)
+        {
+            if (request.VideoIds == null || request.VideoIds.Count == 0)
+            {
+                return BadRequest(new { error = "No video IDs provided" });
+            }
+
+            _logger.LogInformation("Rescan requested for {Count} processing videos", request.VideoIds.Count);
+
+            var results = new List<RescanResult>();
+            var serviceProvider = HttpContext.RequestServices;
+            var videoAnalyzer = serviceProvider.GetRequiredService<VideoAnalyzerService>();
+
+            // Load all videos from database - must be in Processing status
+            var videos = await _dbContext.VideoAnalyses
+                .Where(v => request.VideoIds.Contains(v.Id) && v.ProcessingStatus == ProcessingStatus.Processing)
+                .ToListAsync();
+
+            if (videos.Count == 0)
+            {
+                return BadRequest(new { error = "No processing videos found with the provided IDs" });
+            }
+
+            // Process videos in parallel with controlled concurrency
+            const int maxConcurrency = 5;
+            var semaphore = new SemaphoreSlim(maxConcurrency, maxConcurrency);
+            var tasks = videos.Select(async video =>
+            {
+                await semaphore.WaitAsync();
+                try
+                {
+                    var result = new RescanResult
+                    {
+                        VideoId = video.Id,
+                        Success = false,
+                        Message = "Not processed"
+                    };
+
+                    try
+                    {
+                        if (string.IsNullOrEmpty(video.FilePath))
+                        {
+                            result.Message = "Video file path is empty";
+                            lock (results) { results.Add(result); }
+                            return;
+                        }
+
+                        if (!System.IO.File.Exists(video.FilePath))
+                        {
+                            result.Message = "Video file not found on disk";
+                            lock (results) { results.Add(result); }
+                            return;
+                        }
+
+                        _logger.LogInformation("Rescanning processing video ID {VideoId}: {FilePath}", video.Id, video.FilePath);
+
+                        // Find external subtitles
+                        var externalSubtitlePaths = FindAllExternalSubtitles(video.FilePath);
+
+                        // Analyze the video
+                        var (videoInfo, compatibilityResult) = await Task.Run(() => 
+                            videoAnalyzer.AnalyzeVideoStructured(video.FilePath, externalSubtitlePaths));
+
+                        if (videoInfo == null || compatibilityResult == null)
+                        {
+                            result.Message = "Video analysis returned null results";
+                            lock (results) { results.Add(result); }
+                            return;
+                        }
+
+                        // Check if media information is valid (not broken)
+                        bool isBroken = false;
+                        string? brokenReason = null;
+
+                        if (string.IsNullOrWhiteSpace(videoInfo.VideoCodec) && string.IsNullOrWhiteSpace(videoInfo.Container))
+                        {
+                            isBroken = true;
+                            brokenReason = "No video codec or container information found";
+                        }
+                        else if (videoInfo.Width == 0 || videoInfo.Height == 0)
+                        {
+                            isBroken = true;
+                            brokenReason = "Invalid video resolution (width or height is 0)";
+                        }
+                        else if (videoInfo.Duration <= 0)
+                        {
+                            isBroken = true;
+                            brokenReason = "Invalid duration (duration is 0 or negative)";
+                        }
+                        else if (videoInfo.FileSize == 0)
+                        {
+                            isBroken = true;
+                            brokenReason = "File size is 0 bytes";
+                        }
+
+                        // Update the existing video analysis record
+                        video.FileName = System.IO.Path.GetFileName(video.FilePath);
+                        video.FileSize = new System.IO.FileInfo(video.FilePath).Length;
+                        video.Duration = videoInfo.Duration;
+                        video.Container = videoInfo.Container;
+                        video.VideoCodec = videoInfo.VideoCodec;
+                        video.VideoCodecTag = videoInfo.VideoCodecTag;
+                        video.IsCodecTagCorrect = videoInfo.IsCodecTagCorrect;
+                        video.BitDepth = videoInfo.BitDepth;
+                        video.Width = videoInfo.Width;
+                        video.Height = videoInfo.Height;
+                        video.FrameRate = videoInfo.FrameRate;
+                        video.IsHDR = videoInfo.IsHDR;
+                        video.HDRType = videoInfo.HDRType ?? string.Empty;
+                        video.IsFastStart = videoInfo.IsFastStart;
+                        video.AudioCodecs = string.Join(", ", videoInfo.AudioTracks.Select(t => t.Codec).Distinct());
+                        video.AudioTrackCount = videoInfo.AudioTracks.Count;
+                        video.AudioTracksJson = System.Text.Json.JsonSerializer.Serialize(videoInfo.AudioTracks);
+                        video.SubtitleFormats = string.Join(", ", videoInfo.SubtitleTracks.Select(t => t.Format).Distinct());
+                        video.SubtitleTrackCount = videoInfo.SubtitleTracks.Count;
+                        video.SubtitleTracksJson = System.Text.Json.JsonSerializer.Serialize(videoInfo.SubtitleTracks);
+                        video.IsBroken = isBroken;
+                        video.BrokenReason = brokenReason;
+                        video.AnalyzedAt = DateTime.UtcNow;
+
+                        // Clear processing status
+                        video.ProcessingStatus = ProcessingStatus.None;
+                        video.ProcessingStartedAt = null;
+
+                        // Update compatibility results
+                        video.CompatibilityRating = compatibilityResult.CompatibilityRating;
+                        // ClientResults is deprecated in new system, but keep for backward compatibility
+                        video.DirectPlayClients = compatibilityResult.ClientResults?.Values.Count(r => r.Status == "Direct Play") ?? 0;
+                        video.RemuxClients = compatibilityResult.ClientResults?.Values.Count(r => r.Status == "Remux") ?? 0;
+                        video.TranscodeClients = compatibilityResult.ClientResults?.Values.Count(r => r.Status == "Transcode") ?? 0;
+
+                        // Update issues and recommendations
+                        video.Issues = System.Text.Json.JsonSerializer.Serialize(compatibilityResult.Issues);
+                        video.Recommendations = System.Text.Json.JsonSerializer.Serialize(compatibilityResult.Recommendations);
+                        video.ClientResults = System.Text.Json.JsonSerializer.Serialize(compatibilityResult.ClientResults ?? new Dictionary<string, ClientCompatibility>());
+
+                        // Recalculate OverallScore
+                        var recalculatedScore = CalculateOverallScore(
+                            video.CompatibilityRating, 
+                            0, 
+                            video.VideoCodec, 
+                            video.BitDepth);
+
+                        if (Enum.TryParse<CompatibilityScore>(recalculatedScore, true, out var parsedScore))
+                        {
+                            video.OverallScore = parsedScore;
+                        }
+                        else
+                        {
+                            video.OverallScore = CompatibilityScore.Unknown;
+                        }
+
+                        // Generate compatibility report
+                        var reportGenerator = new ReportGenerator();
+                        video.FullReport = reportGenerator.GenerateReport(videoInfo, compatibilityResult);
+
+                        await _dbContext.SaveChangesAsync();
+
+                        result.Success = true;
+                        result.Message = "Video rescanned successfully";
+                        _logger.LogInformation("Successfully rescanned processing video ID {VideoId}", video.Id);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Error rescanning processing video ID {VideoId}", video.Id);
+                        result.Message = $"Error: {ex.Message}";
+                    }
+                    finally
+                    {
+                        lock (results) { results.Add(result); }
+                    }
+                }
+                finally
+                {
+                    semaphore.Release();
+                }
+            });
+
+            await Task.WhenAll(tasks);
+
+            var successCount = results.Count(r => r.Success);
+            var failCount = results.Count(r => !r.Success);
+
+            return Ok(new
+            {
+                total = results.Count,
+                success = successCount,
+                failed = failCount,
+                results = results
+            });
+        }
+
+        [HttpPost("processing/videos/delete")]
+        public async Task<ActionResult> DeleteProcessingVideos([FromBody] RedownloadRequest request)
+        {
+            if (request.VideoIds == null || request.VideoIds.Count == 0)
+            {
+                return BadRequest(new { error = "No video IDs provided" });
+            }
+
+            _logger.LogInformation("Delete requested for {Count} processing videos", request.VideoIds.Count);
+
+            // Load all videos from database - must be in Processing status
+            var videos = await _dbContext.VideoAnalyses
+                .Where(v => request.VideoIds.Contains(v.Id) && v.ProcessingStatus == ProcessingStatus.Processing)
+                .ToListAsync();
+
+            if (videos.Count == 0)
+            {
+                return BadRequest(new { error = "No processing videos found with the provided IDs" });
+            }
+
+            // Remove videos from database
+            _dbContext.VideoAnalyses.RemoveRange(videos);
+            await _dbContext.SaveChangesAsync();
+
+            _logger.LogInformation("Deleted {Count} processing videos", videos.Count);
+
+            return Ok(new
+            {
+                deleted = videos.Count,
+                videoIds = videos.Select(v => v.Id).ToList()
+            });
         }
 
         [HttpPost("scan")]
@@ -638,26 +895,28 @@ namespace Optimarr.Controllers
             {
                 var totalVideos = await _dbContext.VideoAnalyses.CountAsync();
                 
-                // Get thresholds once
-                var optimalThreshold = _configuration.GetValue<int>("CompatibilityRating:OptimalDirectPlayThreshold", 8);
-                var goodDirectThreshold = _configuration.GetValue<int>("CompatibilityRating:GoodDirectPlayThreshold", 5);
-                var goodCombinedThreshold = _configuration.GetValue<int>("CompatibilityRating:GoodCombinedThreshold", 8);
+                // Get rating thresholds from MediaPropertySettings (new property-based system)
+                var ratingService = new MediaPropertyRatingService(_configuration, _logger);
+                var thresholds = ratingService.LoadRatingThresholds();
+                var optimalThreshold = thresholds.Optimal; // Default: 80
+                var goodThreshold = thresholds.Good; // Default: 60
                 
                 // Calculate broken videos count
                 var brokenCount = await _dbContext.VideoAnalyses.CountAsync(v => v.IsBroken);
                 
                 // Calculate counts efficiently by loading only necessary fields (excluding broken videos)
+                // Use CompatibilityRating (0-100 scale) and OverallScore if available
                 var videoScores = await _dbContext.VideoAnalyses
                     .Where(v => !v.IsBroken)
-                    .Select(v => new { v.CompatibilityRating, v.RemuxClients })
+                    .Select(v => new { v.CompatibilityRating, v.OverallScore })
                     .ToListAsync();
                 
+                // Count videos based on rating thresholds (0-100 scale)
                 var optimalCount = videoScores.Count(v => v.CompatibilityRating >= optimalThreshold);
                 var goodCount = videoScores.Count(v => 
-                    v.CompatibilityRating < optimalThreshold && // Not optimal
-                    ((v.CompatibilityRating >= goodDirectThreshold) || 
-                     ((v.CompatibilityRating + v.RemuxClients) >= goodCombinedThreshold)));
-                var poorCount = videoScores.Count - optimalCount - goodCount;
+                    v.CompatibilityRating >= goodThreshold && // At least Good
+                    v.CompatibilityRating < optimalThreshold); // But not Optimal
+                var poorCount = videoScores.Count(v => v.CompatibilityRating < goodThreshold);
             
                 var totalSize = await _dbContext.VideoAnalyses.SumAsync(v => v.FileSize);
                 var totalDuration = await _dbContext.VideoAnalyses.SumAsync(v => v.Duration);
@@ -677,6 +936,177 @@ namespace Optimarr.Controllers
                     .ToListAsync();
                 
                 var hdrCount = await _dbContext.VideoAnalyses.CountAsync(v => v.IsHDR);
+                var sdrCount = totalVideos - hdrCount - brokenCount; // Exclude broken videos
+                
+                // Audio codec distribution
+                var audioCodecStats = await _dbContext.VideoAnalyses
+                    .Where(v => !string.IsNullOrEmpty(v.AudioCodecs) && v.AudioCodecs != "NULL")
+                    .Select(v => v.AudioCodecs)
+                    .ToListAsync();
+                
+                var audioCodecDistribution = new Dictionary<string, int>();
+                foreach (var audioCodecs in audioCodecStats)
+                {
+                    var codecs = audioCodecs.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                    foreach (var codec in codecs)
+                    {
+                        if (!string.IsNullOrEmpty(codec) && codec != "NULL")
+                        {
+                            audioCodecDistribution[codec] = audioCodecDistribution.GetValueOrDefault(codec, 0) + 1;
+                        }
+                    }
+                }
+                
+                // Audio channel distribution (Surround vs Stereo)
+                var audioChannelStats = await _dbContext.VideoAnalyses
+                    .Where(v => !string.IsNullOrEmpty(v.AudioTracksJson))
+                    .Select(v => v.AudioTracksJson)
+                    .ToListAsync();
+                
+                var audioChannelDistribution = new Dictionary<string, int>
+                {
+                    ["Stereo (2.0)"] = 0,
+                    ["Surround (5.1+)"] = 0,
+                    ["Mono (1.0)"] = 0,
+                    ["Other"] = 0
+                };
+                
+                foreach (var audioTracksJson in audioChannelStats)
+                {
+                    try
+                    {
+                        var options = new System.Text.Json.JsonSerializerOptions
+                        {
+                            PropertyNameCaseInsensitive = true
+                        };
+                        var audioTracks = System.Text.Json.JsonSerializer.Deserialize<List<AudioTrack>>(audioTracksJson, options);
+                        if (audioTracks != null && audioTracks.Count > 0)
+                        {
+                            // Use the first audio track (primary track)
+                            var primaryTrack = audioTracks[0];
+                            if (primaryTrack.Channels == 1)
+                            {
+                                audioChannelDistribution["Mono (1.0)"]++;
+                            }
+                            else if (primaryTrack.Channels == 2)
+                            {
+                                audioChannelDistribution["Stereo (2.0)"]++;
+                            }
+                            else if (primaryTrack.Channels >= 6)
+                            {
+                                audioChannelDistribution["Surround (5.1+)"]++;
+                            }
+                            else
+                            {
+                                audioChannelDistribution["Other"]++;
+                            }
+                        }
+                    }
+                    catch
+                    {
+                        // Skip invalid JSON
+                    }
+                }
+                
+                // Bit depth distribution
+                var bitDepthStats = await _dbContext.VideoAnalyses
+                    .Where(v => v.BitDepth > 0)
+                    .GroupBy(v => v.BitDepth)
+                    .Select(g => new { BitDepth = g.Key, Count = g.Count() })
+                    .ToListAsync();
+                
+                var bitDepthDistribution = bitDepthStats.ToDictionary(x => $"{x.BitDepth}bit", x => x.Count);
+                
+                // Subtitle format distribution
+                var subtitleStats = await _dbContext.VideoAnalyses
+                    .Where(v => !string.IsNullOrEmpty(v.SubtitleFormats) && v.SubtitleFormats != "NULL")
+                    .Select(v => v.SubtitleFormats)
+                    .ToListAsync();
+                
+                var subtitleFormatDistribution = new Dictionary<string, int>();
+                foreach (var subtitleFormats in subtitleStats)
+                {
+                    var formats = subtitleFormats.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                    foreach (var format in formats)
+                    {
+                        if (!string.IsNullOrEmpty(format) && format != "NULL")
+                        {
+                            subtitleFormatDistribution[format] = subtitleFormatDistribution.GetValueOrDefault(format, 0) + 1;
+                        }
+                    }
+                }
+                
+                // Bitrate range distribution (calculate from FileSize and Duration)
+                var bitrateStats = await _dbContext.VideoAnalyses
+                    .Where(v => v.Duration > 0 && v.FileSize > 0)
+                    .Select(v => new { v.FileSize, v.Duration })
+                    .ToListAsync();
+                
+                var bitrateRangeDistribution = new Dictionary<string, int>
+                {
+                    ["0-5 Mbps"] = 0,
+                    ["5-10 Mbps"] = 0,
+                    ["10-20 Mbps"] = 0,
+                    ["20-50 Mbps"] = 0,
+                    ["50+ Mbps"] = 0
+                };
+                
+                foreach (var stat in bitrateStats)
+                {
+                    // Calculate bitrate in Mbps
+                    // Formula: (FileSize in bytes * 8 bits/byte) / (Duration in seconds) / 1,000,000 bits per Mbps
+                    // FileSize is in bytes, Duration should be in seconds
+                    if (stat.Duration <= 0 || stat.FileSize <= 0)
+                        continue;
+                    
+                    double durationSeconds = stat.Duration;
+                    
+                    // Detect if duration might be in wrong unit by checking calculated bitrate
+                    // First, try calculating with duration as-is (assuming seconds)
+                    var initialBitrateMbps = (stat.FileSize * 8.0) / (durationSeconds * 1_000_000.0);
+                    
+                    // If bitrate is unreasonably high (> 1000 Mbps), duration might be in wrong unit
+                    // Try converting from milliseconds if duration is in a suspicious range
+                    if (initialBitrateMbps > 1000.0 && durationSeconds > 0)
+                    {
+                        // Try treating duration as milliseconds
+                        var durationAsMs = durationSeconds;
+                        var correctedDurationSeconds = durationAsMs / 1000.0;
+                        
+                        // Recalculate with corrected duration
+                        var correctedBitrateMbps = (stat.FileSize * 8.0) / (correctedDurationSeconds * 1_000_000.0);
+                        
+                        // If corrected bitrate is reasonable, use it
+                        if (correctedBitrateMbps <= 500.0 && correctedDurationSeconds >= 1.0 && correctedDurationSeconds <= 864000)
+                        {
+                            durationSeconds = correctedDurationSeconds;
+                            initialBitrateMbps = correctedBitrateMbps;
+                        }
+                    }
+                    
+                    // Validate duration is reasonable (at least 1 second, at most 10 days = 864000 seconds)
+                    if (durationSeconds < 1.0 || durationSeconds > 864000)
+                        continue;
+                    
+                    // Use the (possibly corrected) bitrate
+                    var bitrateMbps = initialBitrateMbps;
+                    
+                    // Relaxed sanity check: allow up to 500 Mbps (4K HDR can be high) and down to 0.01 Mbps
+                    // If bitrate is still unreasonable, skip it
+                    if (bitrateMbps > 500 || bitrateMbps < 0.01)
+                        continue;
+                    
+                    if (bitrateMbps < 5)
+                        bitrateRangeDistribution["0-5 Mbps"]++;
+                    else if (bitrateMbps < 10)
+                        bitrateRangeDistribution["5-10 Mbps"]++;
+                    else if (bitrateMbps < 20)
+                        bitrateRangeDistribution["10-20 Mbps"]++;
+                    else if (bitrateMbps < 50)
+                        bitrateRangeDistribution["20-50 Mbps"]++;
+                    else
+                        bitrateRangeDistribution["50+ Mbps"]++;
+                }
                 
                 var recentScans = await _dbContext.LibraryScans
                     .OrderByDescending(s => s.StartedAt)
@@ -693,8 +1123,14 @@ namespace Optimarr.Controllers
                     TotalSize = totalSize,
                     TotalDuration = totalDuration,
                     HdrCount = hdrCount,
+                    SdrCount = sdrCount,
                     CodecDistribution = codecStats.ToDictionary(x => x.Codec, x => x.Count),
                     ContainerDistribution = containerStats.ToDictionary(x => x.Container, x => x.Count),
+                    AudioCodecDistribution = audioCodecDistribution,
+                    AudioChannelDistribution = audioChannelDistribution,
+                    BitDepthDistribution = bitDepthDistribution,
+                    SubtitleFormatDistribution = subtitleFormatDistribution,
+                    BitrateRangeDistribution = bitrateRangeDistribution,
                     RecentScans = recentScans
                 });
             }
@@ -711,14 +1147,11 @@ namespace Optimarr.Controllers
             // Calculate breakdown dynamically based on current thresholds
             var allVideos = await _dbContext.VideoAnalyses.ToListAsync();
             var breakdown = allVideos
-                .GroupBy(v => CalculateOverallScore(v.CompatibilityRating, v.RemuxClients, v.VideoCodec, v.BitDepth))
+                .GroupBy(v => CalculateOverallScore(v.CompatibilityRating, 0, v.VideoCodec, v.BitDepth))
                 .Select(g => new
                 {
                     Score = g.Key,
-                    Count = g.Count(),
-                    AvgDirectPlay = g.Average(v => v.DirectPlayClients),
-                    AvgRemux = g.Average(v => v.RemuxClients),
-                    AvgTranscode = g.Average(v => v.TranscodeClients)
+                    Count = g.Count()
                 })
                 .ToList();
 
@@ -727,10 +1160,7 @@ namespace Optimarr.Controllers
                 Breakdown = breakdown.Select(b => new ScoreBreakdown
                 {
                     Score = b.Score.ToString(),
-                    Count = b.Count,
-                    AvgDirectPlay = (int)Math.Round(b.AvgDirectPlay),
-                    AvgRemux = (int)Math.Round(b.AvgRemux),
-                    AvgTranscode = (int)Math.Round(b.AvgTranscode)
+                    Count = b.Count
                 }).ToList()
             });
         }
@@ -740,7 +1170,8 @@ namespace Optimarr.Controllers
         {
             var videos = await _dbContext.VideoAnalyses
                 .Where(v => v.OverallScore == CompatibilityScore.Poor || v.OverallScore == CompatibilityScore.Good)
-                .OrderByDescending(v => v.TranscodeClients)
+                .OrderByDescending(v => v.CompatibilityRating)
+                .ThenBy(v => v.FileName)
                 .Take(limit)
                 .Select(v => new IssueSummary
                 {
@@ -750,9 +1181,7 @@ namespace Optimarr.Controllers
                     VideoCodec = v.VideoCodec,
                     Container = v.Container,
                     OverallScore = v.OverallScore.ToString(),
-                    DirectPlayClients = v.DirectPlayClients,
-                    RemuxClients = v.RemuxClients,
-                    TranscodeClients = v.TranscodeClients,
+                    CompatibilityRating = v.CompatibilityRating,
                     IsHDR = v.IsHDR
                 })
                 .ToListAsync();
@@ -766,9 +1195,6 @@ namespace Optimarr.Controllers
             
             // Calculate videos that could benefit from optimization (Poor + some Good)
             var videosNeedingOptimization = poorVideos;
-            var videosWithTranscoding = allVideos.Count(v => v.TranscodeClients > 0);
-            var avgTranscodeClients = allVideos.Count > 0 ? allVideos.Average(v => v.TranscodeClients) : 0;
-            var avgDirectPlayClients = allVideos.Count > 0 ? allVideos.Average(v => v.DirectPlayClients) : 0;
 
             return Ok(new
             {
@@ -780,90 +1206,11 @@ namespace Optimarr.Controllers
                     goodVideos,
                     poorVideos,
                     videosNeedingOptimization,
-                    videosWithTranscoding,
-                    avgTranscodeClients = Math.Round(avgTranscodeClients, 1),
-                    avgDirectPlayClients = Math.Round(avgDirectPlayClients, 1),
                     optimizationPotential = totalVideos > 0 ? Math.Round((double)videosNeedingOptimization / totalVideos * 100, 1) : 0
                 }
             });
         }
 
-        [HttpGet("dashboard/client-compatibility")]
-        public async Task<ActionResult<object>> GetClientCompatibilityStats()
-        {
-            var allVideos = await _dbContext.VideoAnalyses.ToListAsync();
-            
-            // Get enabled clients (filter out disabled ones)
-            var allClientsList = Services.JellyfinCompatibilityData.AllClients;
-            var disabledClientsSection = _configuration?.GetSection("CompatibilityRating:DisabledClients");
-            var enabledClients = new List<string>();
-            
-            foreach (var client in allClientsList)
-            {
-                var isDisabled = disabledClientsSection?.GetValue<bool>(client) ?? false;
-                if (!isDisabled)
-                {
-                    enabledClients.Add(client);
-                }
-            }
-            
-            // If all clients are disabled, enable all by default
-            var allClients = enabledClients.Count > 0 ? enabledClients.ToArray() : allClientsList;
-            
-            var clientStats = new Dictionary<string, object>();
-            
-            foreach (var client in allClients)
-            {
-                var directPlayCount = 0;
-                var remuxCount = 0;
-                var transcodeCount = 0;
-                var totalVideos = allVideos.Count;
-                
-                foreach (var video in allVideos)
-                {
-                    if (string.IsNullOrEmpty(video.ClientResults)) continue;
-                    
-                    try
-                    {
-                        var clientResults = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, Models.ClientCompatibility>>(video.ClientResults);
-                        if (clientResults != null && clientResults.ContainsKey(client))
-                        {
-                            var clientResult = clientResults[client];
-                            var status = clientResult?.Status ?? "";
-                            
-                            if (status == "Direct Play") directPlayCount++;
-                            else if (status == "Remux") remuxCount++;
-                            else if (status == "Transcode") transcodeCount++;
-                        }
-                    }
-                    catch
-                    {
-                        // Skip videos with invalid client results
-                    }
-                }
-                
-                var compatibilityPercent = totalVideos > 0 
-                    ? Math.Round((double)directPlayCount / totalVideos * 100, 1) 
-                    : 0;
-                
-                var compatibilityLevel = compatibilityPercent >= 80 ? "Excellent" :
-                                        compatibilityPercent >= 60 ? "Good" :
-                                        compatibilityPercent >= 40 ? "Fair" :
-                                        compatibilityPercent >= 20 ? "Poor" : "Very Poor";
-                
-                clientStats[client] = new
-                {
-                    directPlayCount,
-                    remuxCount,
-                    transcodeCount,
-                    totalVideos,
-                    compatibilityPercent,
-                    compatibilityLevel
-                };
-            }
-            
-            return Ok(new { clients = clientStats });
-        }
 
         [HttpGet("videos")]
         public async Task<ActionResult<PagedResult<VideoAnalysis>>> GetVideos(
@@ -877,7 +1224,13 @@ namespace Optimarr.Controllers
             [FromQuery] string? sortBy = "analyzedAt",
             [FromQuery] string? sortOrder = "desc",
             [FromQuery] bool? isBroken = null,
-            [FromQuery] string? servarrFilter = null)
+            [FromQuery] string? servarrFilter = null,
+            [FromQuery] string? audioCodec = null,
+            [FromQuery] string? audioChannel = null,
+            [FromQuery] string? hdrSdr = null,
+            [FromQuery] int? bitDepth = null,
+            [FromQuery] string? subtitleFormat = null,
+            [FromQuery] string? bitrateRange = null)
         {
             try
             {
@@ -931,6 +1284,12 @@ namespace Optimarr.Controllers
                 {
                     query = query.Where(v => v.IsBroken == isBroken.Value);
                 }
+                // If filtering by score and broken filter is not explicitly set to true, exclude broken videos
+                else if (!string.IsNullOrEmpty(score))
+                {
+                    // When filtering by score (Poor/Good/Optimal), exclude broken videos unless explicitly requested
+                    query = query.Where(v => !v.IsBroken);
+                }
 
                 // Filter by Servarr sync status
                 if (!string.IsNullOrEmpty(servarrFilter))
@@ -949,9 +1308,135 @@ namespace Optimarr.Controllers
                     // If filter is something else, ignore it (show all)
                 }
 
+                // Filter by audio codec
+                if (!string.IsNullOrEmpty(audioCodec))
+                {
+                    query = query.Where(v => v.AudioCodecs != null && v.AudioCodecs.Contains(audioCodec));
+                }
+
+                // Filter by audio channels (mono/stereo/surround)
+                // Note: This will be applied after loading videos since we need to parse JSON
+                bool needsAudioChannelFilter = !string.IsNullOrEmpty(audioChannel);
+                string? audioChannelFilterValue = audioChannel?.ToLowerInvariant();
+
+                // Filter by HDR/SDR
+                if (!string.IsNullOrEmpty(hdrSdr))
+                {
+                    var hdrFilter = hdrSdr.ToLowerInvariant();
+                    if (hdrFilter == "hdr")
+                    {
+                        query = query.Where(v => v.IsHDR);
+                    }
+                    else if (hdrFilter == "sdr")
+                    {
+                        query = query.Where(v => !v.IsHDR);
+                    }
+                }
+
+                // Filter by bit depth
+                if (bitDepth.HasValue)
+                {
+                    query = query.Where(v => v.BitDepth == bitDepth.Value);
+                }
+
+                // Filter by subtitle format
+                if (!string.IsNullOrEmpty(subtitleFormat))
+                {
+                    query = query.Where(v => v.SubtitleFormats != null && v.SubtitleFormats.Contains(subtitleFormat));
+                }
+
+                // Filter by bitrate range
+                // Note: This will be applied after loading videos since bitrate needs to be calculated
+                bool needsBitrateFilter = !string.IsNullOrEmpty(bitrateRange);
+                string? bitrateRangeFilterValue = bitrateRange;
+
                 // Load all matching videos to recalculate scores and filter
                 // Note: We'll apply sorting after filtering and score recalculation
                 var allVideos = await query.ToListAsync();
+
+                // Apply audio channel filter
+                if (needsAudioChannelFilter && !string.IsNullOrEmpty(audioChannelFilterValue))
+                {
+                    allVideos = allVideos.Where(v =>
+                    {
+                        if (string.IsNullOrEmpty(v.AudioTracksJson))
+                            return false;
+
+                        try
+                        {
+                            var options = new System.Text.Json.JsonSerializerOptions
+                            {
+                                PropertyNameCaseInsensitive = true
+                            };
+                            var audioTracks = System.Text.Json.JsonSerializer.Deserialize<List<AudioTrack>>(v.AudioTracksJson, options);
+                            if (audioTracks == null || audioTracks.Count == 0)
+                                return false;
+
+                            var primaryTrack = audioTracks[0];
+                            var channels = primaryTrack.Channels;
+
+                            return audioChannelFilterValue switch
+                            {
+                                "mono" => channels == 1,
+                                "stereo" => channels == 2,
+                                "surround" => channels >= 6,
+                                _ => false
+                            };
+                        }
+                        catch
+                        {
+                            return false;
+                        }
+                    }).ToList();
+                }
+
+                // Apply bitrate range filter
+                if (needsBitrateFilter && !string.IsNullOrEmpty(bitrateRangeFilterValue))
+                {
+                    allVideos = allVideos.Where(v =>
+                    {
+                        if (v.Duration <= 0 || v.FileSize <= 0)
+                            return false;
+
+                        double durationSeconds = v.Duration;
+                        
+                        // Detect if duration might be in wrong unit
+                        var initialBitrateMbps = (v.FileSize * 8.0) / (durationSeconds * 1_000_000.0);
+                        
+                        // If bitrate is unreasonably high (> 1000 Mbps), try converting from milliseconds
+                        if (initialBitrateMbps > 1000.0 && durationSeconds > 0)
+                        {
+                            var correctedDurationSeconds = durationSeconds / 1000.0;
+                            var correctedBitrateMbps = (v.FileSize * 8.0) / (correctedDurationSeconds * 1_000_000.0);
+                            
+                            if (correctedBitrateMbps <= 500.0 && correctedDurationSeconds >= 1.0 && correctedDurationSeconds <= 864000)
+                            {
+                                durationSeconds = correctedDurationSeconds;
+                                initialBitrateMbps = correctedBitrateMbps;
+                            }
+                        }
+                        
+                        // Validate duration is reasonable
+                        if (durationSeconds < 1.0 || durationSeconds > 864000)
+                            return false;
+
+                        var bitrateMbps = initialBitrateMbps;
+                        
+                        // Relaxed sanity check
+                        if (bitrateMbps > 500 || bitrateMbps < 0.01)
+                            return false;
+
+                        return bitrateRangeFilterValue switch
+                        {
+                            "0-5" => bitrateMbps < 5,
+                            "5-10" => bitrateMbps >= 5 && bitrateMbps < 10,
+                            "10-20" => bitrateMbps >= 10 && bitrateMbps < 20,
+                            "20-50" => bitrateMbps >= 20 && bitrateMbps < 50,
+                            "50+" => bitrateMbps >= 50,
+                            _ => false
+                        };
+                    }).ToList();
+                }
 
                 // Recalculate OverallScore dynamically based on current thresholds
                 foreach (var video in allVideos)
@@ -960,7 +1445,7 @@ namespace Optimarr.Controllers
                     {
                         var recalculatedScore = CalculateOverallScore(
                             video.CompatibilityRating, 
-                            video.RemuxClients, 
+                            0, 
                             video.VideoCodec, 
                             video.BitDepth);
                         
@@ -990,7 +1475,7 @@ namespace Optimarr.Controllers
                     {
                         try
                         {
-                            var calculatedScore = CalculateOverallScore(v.CompatibilityRating, v.RemuxClients, v.VideoCodec, v.BitDepth);
+                            var calculatedScore = CalculateOverallScore(v.CompatibilityRating, 0, v.VideoCodec, v.BitDepth);
                             return calculatedScore.Equals(targetScore, StringComparison.OrdinalIgnoreCase);
                         }
                         catch
@@ -1000,8 +1485,20 @@ namespace Optimarr.Controllers
                     }).ToList();
                 }
 
-                // Calculate total after filtering
-                var total = allVideos.Count;
+                // Deduplicate videos by title (without extension)
+                // Group by normalized title and keep only the best one per title
+                var deduplicatedVideos = allVideos
+                    .GroupBy(v => NormalizeTitle(v.FileName ?? string.Empty))
+                    .Select(g => g.OrderByDescending(v => 
+                        // Priority: 1) Not broken, 2) Higher compatibility rating, 3) More recent analysis
+                        (v.IsBroken ? 0 : 1) * 1000000 +
+                        v.CompatibilityRating * 1000 +
+                        v.AnalyzedAt.Ticks
+                    ).First())
+                    .ToList();
+
+                // Calculate total after deduplication
+                var total = deduplicatedVideos.Count;
 
                 // Apply sorting
                 var sortByLower = (sortBy ?? "analyzedAt").ToLowerInvariant();
@@ -1011,23 +1508,23 @@ namespace Optimarr.Controllers
                 var sortedVideos = sortByLower switch
                 {
                     "filename" => isDescending 
-                        ? allVideos.OrderByDescending(v => v.FileName ?? string.Empty).ToList()
-                        : allVideos.OrderBy(v => v.FileName ?? string.Empty).ToList(),
+                        ? deduplicatedVideos.OrderByDescending(v => v.FileName ?? string.Empty).ToList()
+                        : deduplicatedVideos.OrderBy(v => v.FileName ?? string.Empty).ToList(),
                     "filesize" => isDescending 
-                        ? allVideos.OrderByDescending(v => v.FileSize).ToList()
-                        : allVideos.OrderBy(v => v.FileSize).ToList(),
+                        ? deduplicatedVideos.OrderByDescending(v => v.FileSize).ToList()
+                        : deduplicatedVideos.OrderBy(v => v.FileSize).ToList(),
                     "compatibilityrating" => isDescending 
-                        ? allVideos.OrderByDescending(v => v.CompatibilityRating).ToList()
-                        : allVideos.OrderBy(v => v.CompatibilityRating).ToList(),
+                        ? deduplicatedVideos.OrderByDescending(v => v.CompatibilityRating).ToList()
+                        : deduplicatedVideos.OrderBy(v => v.CompatibilityRating).ToList(),
                     "duration" => isDescending 
-                        ? allVideos.OrderByDescending(v => v.Duration).ToList()
-                        : allVideos.OrderBy(v => v.Duration).ToList(),
+                        ? deduplicatedVideos.OrderByDescending(v => v.Duration).ToList()
+                        : deduplicatedVideos.OrderBy(v => v.Duration).ToList(),
                     "width" => isDescending 
-                        ? allVideos.OrderByDescending(v => v.Width * v.Height).ToList() // Sort by total pixels
-                        : allVideos.OrderBy(v => v.Width * v.Height).ToList(),
+                        ? deduplicatedVideos.OrderByDescending(v => v.Width * v.Height).ToList() // Sort by total pixels
+                        : deduplicatedVideos.OrderBy(v => v.Width * v.Height).ToList(),
                     "analyzedat" or _ => isDescending 
-                        ? allVideos.OrderByDescending(v => v.AnalyzedAt).ToList()
-                        : allVideos.OrderBy(v => v.AnalyzedAt).ToList()
+                        ? deduplicatedVideos.OrderByDescending(v => v.AnalyzedAt).ToList()
+                        : deduplicatedVideos.OrderBy(v => v.AnalyzedAt).ToList()
                 };
 
                 // Apply pagination after sorting
@@ -1060,7 +1557,13 @@ namespace Optimarr.Controllers
             [FromQuery] int? libraryPathId = null,
             [FromQuery] string? search = null,
             [FromQuery] bool? isBroken = null,
-            [FromQuery] string? servarrFilter = null)
+            [FromQuery] string? servarrFilter = null,
+            [FromQuery] string? audioCodec = null,
+            [FromQuery] string? audioChannel = null,
+            [FromQuery] string? hdrSdr = null,
+            [FromQuery] int? bitDepth = null,
+            [FromQuery] string? subtitleFormat = null,
+            [FromQuery] string? bitrateRange = null)
         {
             try
             {
@@ -1110,6 +1613,12 @@ namespace Optimarr.Controllers
                 {
                     query = query.Where(v => v.IsBroken == isBroken.Value);
                 }
+                // If filtering by score and broken filter is not explicitly set to true, exclude broken videos
+                else if (!string.IsNullOrEmpty(score))
+                {
+                    // When filtering by score (Poor/Good/Optimal), exclude broken videos unless explicitly requested
+                    query = query.Where(v => !v.IsBroken);
+                }
 
                 if (!string.IsNullOrEmpty(servarrFilter))
                 {
@@ -1124,8 +1633,122 @@ namespace Optimarr.Controllers
                     }
                 }
 
+                // Apply new filters (same as GetVideos but simplified for ID-only query)
+                if (!string.IsNullOrEmpty(audioCodec))
+                {
+                    query = query.Where(v => v.AudioCodecs != null && v.AudioCodecs.Contains(audioCodec));
+                }
+
+                if (!string.IsNullOrEmpty(hdrSdr))
+                {
+                    var hdrFilter = hdrSdr.ToLowerInvariant();
+                    if (hdrFilter == "hdr")
+                    {
+                        query = query.Where(v => v.IsHDR);
+                    }
+                    else if (hdrFilter == "sdr")
+                    {
+                        query = query.Where(v => !v.IsHDR);
+                    }
+                }
+
+                if (bitDepth.HasValue)
+                {
+                    query = query.Where(v => v.BitDepth == bitDepth.Value);
+                }
+
+                if (!string.IsNullOrEmpty(subtitleFormat))
+                {
+                    query = query.Where(v => v.SubtitleFormats != null && v.SubtitleFormats.Contains(subtitleFormat));
+                }
+
                 // Load all matching videos to recalculate scores and filter
                 var allVideos = await query.ToListAsync();
+
+                // Apply audio channel filter if needed (requires JSON parsing)
+                if (!string.IsNullOrEmpty(audioChannel))
+                {
+                    var channelFilter = audioChannel.ToLowerInvariant();
+                    allVideos = allVideos.Where(v =>
+                    {
+                        if (string.IsNullOrEmpty(v.AudioTracksJson))
+                            return false;
+
+                        try
+                        {
+                            var options = new System.Text.Json.JsonSerializerOptions
+                            {
+                                PropertyNameCaseInsensitive = true
+                            };
+                            var audioTracks = System.Text.Json.JsonSerializer.Deserialize<List<AudioTrack>>(v.AudioTracksJson, options);
+                            if (audioTracks == null || audioTracks.Count == 0)
+                                return false;
+
+                            var primaryTrack = audioTracks[0];
+                            var channels = primaryTrack.Channels;
+
+                            return channelFilter switch
+                            {
+                                "mono" => channels == 1,
+                                "stereo" => channels == 2,
+                                "surround" => channels >= 6,
+                                _ => false
+                            };
+                        }
+                        catch
+                        {
+                            return false;
+                        }
+                    }).ToList();
+                }
+
+                // Apply bitrate range filter if needed (requires calculation)
+                if (!string.IsNullOrEmpty(bitrateRange))
+                {
+                    allVideos = allVideos.Where(v =>
+                    {
+                        if (v.Duration <= 0 || v.FileSize <= 0)
+                            return false;
+
+                        double durationSeconds = v.Duration;
+                        
+                        // Detect if duration might be in wrong unit
+                        var initialBitrateMbps = (v.FileSize * 8.0) / (durationSeconds * 1_000_000.0);
+                        
+                        // If bitrate is unreasonably high (> 1000 Mbps), try converting from milliseconds
+                        if (initialBitrateMbps > 1000.0 && durationSeconds > 0)
+                        {
+                            var correctedDurationSeconds = durationSeconds / 1000.0;
+                            var correctedBitrateMbps = (v.FileSize * 8.0) / (correctedDurationSeconds * 1_000_000.0);
+                            
+                            if (correctedBitrateMbps <= 500.0 && correctedDurationSeconds >= 1.0 && correctedDurationSeconds <= 864000)
+                            {
+                                durationSeconds = correctedDurationSeconds;
+                                initialBitrateMbps = correctedBitrateMbps;
+                            }
+                        }
+                        
+                        // Validate duration is reasonable
+                        if (durationSeconds < 1.0 || durationSeconds > 864000)
+                            return false;
+
+                        var bitrateMbps = initialBitrateMbps;
+                        
+                        // Relaxed sanity check
+                        if (bitrateMbps > 500 || bitrateMbps < 0.01)
+                            return false;
+
+                        return bitrateRange switch
+                        {
+                            "0-5" => bitrateMbps < 5,
+                            "5-10" => bitrateMbps >= 5 && bitrateMbps < 10,
+                            "10-20" => bitrateMbps >= 10 && bitrateMbps < 20,
+                            "20-50" => bitrateMbps >= 20 && bitrateMbps < 50,
+                            "50+" => bitrateMbps >= 50,
+                            _ => false
+                        };
+                    }).ToList();
+                }
 
                 // Recalculate OverallScore dynamically based on current thresholds
                 foreach (var video in allVideos)
@@ -1134,7 +1757,7 @@ namespace Optimarr.Controllers
                     {
                         var recalculatedScore = CalculateOverallScore(
                             video.CompatibilityRating, 
-                            video.RemuxClients, 
+                            0, 
                             video.VideoCodec, 
                             video.BitDepth);
                         
@@ -1162,7 +1785,7 @@ namespace Optimarr.Controllers
                     {
                         try
                         {
-                            var calculatedScore = CalculateOverallScore(v.CompatibilityRating, v.RemuxClients, v.VideoCodec, v.BitDepth);
+                            var calculatedScore = CalculateOverallScore(v.CompatibilityRating, 0, v.VideoCodec, v.BitDepth);
                             return calculatedScore.Equals(targetScore, StringComparison.OrdinalIgnoreCase);
                         }
                         catch
@@ -1187,23 +1810,63 @@ namespace Optimarr.Controllers
         public async Task<ActionResult<FilterOptions>> GetFilterOptions()
         {
             var codecs = await _dbContext.VideoAnalyses
-                .Where(v => !string.IsNullOrEmpty(v.VideoCodec))
+                .Where(v => !string.IsNullOrEmpty(v.VideoCodec) && v.VideoCodec != "NULL")
                 .Select(v => v.VideoCodec)
                 .Distinct()
                 .OrderBy(c => c)
                 .ToListAsync();
 
             var containers = await _dbContext.VideoAnalyses
-                .Where(v => !string.IsNullOrEmpty(v.Container))
+                .Where(v => !string.IsNullOrEmpty(v.Container) && v.Container != "NULL")
                 .Select(v => v.Container)
                 .Distinct()
                 .OrderBy(c => c)
                 .ToListAsync();
 
+            // Get audio codecs
+            var audioCodecList = await _dbContext.VideoAnalyses
+                .Where(v => !string.IsNullOrEmpty(v.AudioCodecs) && v.AudioCodecs != "NULL")
+                .Select(v => v.AudioCodecs)
+                .ToListAsync();
+
+            var audioCodecs = new HashSet<string>();
+            foreach (var audioCodecsStr in audioCodecList)
+            {
+                var audioCodecArray = audioCodecsStr.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                foreach (var codec in audioCodecArray)
+                {
+                    if (!string.IsNullOrEmpty(codec) && codec != "NULL")
+                    {
+                        audioCodecs.Add(codec);
+                    }
+                }
+            }
+
+            // Get subtitle formats
+            var subtitleFormatList = await _dbContext.VideoAnalyses
+                .Where(v => !string.IsNullOrEmpty(v.SubtitleFormats) && v.SubtitleFormats != "NULL")
+                .Select(v => v.SubtitleFormats)
+                .ToListAsync();
+
+            var subtitleFormats = new HashSet<string>();
+            foreach (var formatsStr in subtitleFormatList)
+            {
+                var formats = formatsStr.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                foreach (var format in formats)
+                {
+                    if (!string.IsNullOrEmpty(format) && format != "NULL")
+                    {
+                        subtitleFormats.Add(format);
+                    }
+                }
+            }
+
             return Ok(new FilterOptions
             {
                 Codecs = codecs,
-                Containers = containers
+                Containers = containers,
+                AudioCodecs = audioCodecs.OrderBy(c => c).ToList(),
+                SubtitleFormats = subtitleFormats.OrderBy(f => f).ToList()
             });
         }
 
@@ -1306,12 +1969,18 @@ namespace Optimarr.Controllers
                     _logger.LogWarning("Configuration is not IConfigurationRoot, cannot reload. Changes may not take effect until restart.");
                 }
                 
-                // Recalculate compatibility for all existing videos
+                // Recalculate compatibility for all existing videos in background with new scope
                 _ = Task.Run(async () =>
                 {
                     try
                     {
-                        await RecalculateCompatibilityForAllVideosAsync();
+                        using var scope = _scopeFactory.CreateScope();
+                        var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                        var videoAnalyzer = scope.ServiceProvider.GetRequiredService<VideoAnalyzerService>();
+                        var logger = scope.ServiceProvider.GetRequiredService<ILogger<LibraryController>>();
+                        var configuration = scope.ServiceProvider.GetRequiredService<IConfiguration>();
+                        
+                        await RecalculateCompatibilityForAllVideosAsync(dbContext, videoAnalyzer, logger, configuration);
                     }
                     catch (Exception ex)
                     {
@@ -1328,262 +1997,301 @@ namespace Optimarr.Controllers
             }
         }
 
-        [HttpGet("settings/rating/codecs")]
-        public ActionResult<object> GetCodecThresholds()
-        {
-            var codecThresholds = new List<object>();
-            
-            foreach (var codecEntry in Services.JellyfinCompatibilityData.VideoCodecSupport)
-            {
-                var codecName = codecEntry.Key;
-                var support = codecEntry.Value;
-                
-                // Count clients with each support level
-                var supported = support.Values.Count(s => s == Services.JellyfinCompatibilityData.SupportLevel.Supported);
-                var partial = support.Values.Count(s => s == Services.JellyfinCompatibilityData.SupportLevel.Partial);
-                var unsupported = support.Values.Count(s => s == Services.JellyfinCompatibilityData.SupportLevel.Unsupported);
-                var totalClients = Services.JellyfinCompatibilityData.AllClients.Length;
-                
-                // Calculate default thresholds
-                var optimalThreshold = (int)Math.Ceiling(supported * 0.8);
-                var goodDirectThreshold = (int)Math.Ceiling(supported * 0.6);
-                var goodCombinedThreshold = (int)Math.Ceiling((supported + partial) * 0.8);
-                
-                optimalThreshold = Math.Max(1, optimalThreshold);
-                goodDirectThreshold = Math.Max(1, goodDirectThreshold);
-                goodCombinedThreshold = Math.Max(1, goodCombinedThreshold);
-                
-                // Load from configuration if available
-                var configPath = $"CompatibilityRating:CodecThresholds:{codecName}";
-                var configuredOptimal = _configuration.GetValue<int>($"{configPath}:OptimalDirectPlayThreshold", optimalThreshold);
-                var configuredGoodDirect = _configuration.GetValue<int>($"{configPath}:GoodDirectPlayThreshold", goodDirectThreshold);
-                var configuredGoodCombined = _configuration.GetValue<int>($"{configPath}:GoodCombinedThreshold", goodCombinedThreshold);
-                
-                codecThresholds.Add(new
-                {
-                    codec = codecName,
-                    expectedDirectPlay = supported,
-                    expectedRemux = partial,
-                    expectedTranscode = unsupported,
-                    totalClients = totalClients,
-                    optimalThreshold = configuredOptimal,
-                    goodDirectThreshold = configuredGoodDirect,
-                    goodCombinedThreshold = configuredGoodCombined,
-                    defaultOptimalThreshold = optimalThreshold,
-                    defaultGoodDirectThreshold = goodDirectThreshold,
-                    defaultGoodCombinedThreshold = goodCombinedThreshold
-                });
-            }
-            
-            return Ok(new { codecs = codecThresholds });
-        }
 
-        [HttpPost("settings/rating/codecs")]
-        public ActionResult SaveCodecThresholds([FromBody] Dictionary<string, CodecThresholdConfig> thresholds)
-        {
-            // Note: In a real application, you would save this to appsettings.json or a database
-            // For now, we'll just return success - the actual saving would require file system access
-            // or a configuration management system
-            
-            _logger.LogInformation("Codec thresholds update requested for {Count} codecs", thresholds?.Count ?? 0);
-            
-            return Ok(new { message = "Codec thresholds saved. Restart the application for changes to take effect." });
-        }
 
-        [HttpGet("settings/compatibility")]
-        public ActionResult<object> GetCompatibilitySettings()
+        [HttpGet("settings/media-properties")]
+        public ActionResult<object> GetMediaPropertySettings()
         {
             try
             {
-                // Get enabled clients (filter out disabled ones)
-                var allClients = JellyfinCompatibilityData.AllClients;
-                var disabledClientsSection = _configuration?.GetSection("CompatibilityRating:DisabledClients");
-                var enabledClients = new List<string>();
-                
-                foreach (var client in allClients)
+                // Ensure configuration is reloaded before reading (in case it was updated externally)
+                if (_configuration is Microsoft.Extensions.Configuration.IConfigurationRoot configRoot)
                 {
-                    var isDisabled = disabledClientsSection?.GetValue<bool>(client) ?? false;
-                    if (!isDisabled)
-                    {
-                        enabledClients.Add(client);
-                    }
-                }
-                
-                // If all clients are disabled, enable all by default
-                if (enabledClients.Count == 0)
-                {
-                    enabledClients = allClients.ToList();
-                }
-                
-                // Get default compatibility data
-                var videoCodecs = JellyfinCompatibilityData.VideoCodecSupport;
-                var audioCodecs = JellyfinCompatibilityData.AudioCodecSupport;
-                var containers = JellyfinCompatibilityData.ContainerSupport;
-                var subtitles = JellyfinCompatibilityData.SubtitleSupport;
-                var clients = enabledClients.ToArray();
-
-                // Get custom overrides from configuration with error handling
-                List<CompatibilityOverride> overrides = new List<CompatibilityOverride>();
-                try
-                {
-                    var overridesSection = _configuration.GetSection("CompatibilityOverrides");
-                    if (overridesSection.Exists())
-                    {
-                        overrides = overridesSection.Get<List<CompatibilityOverride>>() ?? new List<CompatibilityOverride>();
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "Error reading compatibility overrides from configuration, using empty list");
-                    overrides = new List<CompatibilityOverride>();
+                    configRoot.Reload();
                 }
 
-                // Build response with defaults and overrides
-                var response = new
-                {
-                    clients = clients,
-                    videoCodecs = videoCodecs.Keys.ToList(),
-                    audioCodecs = audioCodecs.Keys.ToList(),
-                    containers = containers.Keys.ToList(),
-                    subtitleFormats = subtitles.Keys.ToList(),
-                    defaults = new
-                    {
-                        video = videoCodecs,
-                        audio = audioCodecs,
-                        container = containers,
-                        subtitle = subtitles
-                    },
-                    overrides = overrides
-                };
+                var ratingService = new MediaPropertyRatingService(_configuration, _logger);
+                var settings = ratingService.LoadMediaPropertySettings();
+                var weights = ratingService.LoadRatingWeights();
+                
+                // Check if RatingWeights section actually exists in config (not just defaults)
+                var weightsSectionExists = _configuration.GetSection("MediaPropertySettings:RatingWeights").Exists();
 
-                return Ok(response);
+                _logger.LogInformation("Returning media property settings: weights loaded - SurroundSound={SurroundSound}, HDR={HDR}, UnsupportedVideoCodec={UnsupportedVideoCodec}, weightsSectionExists={WeightsSectionExists}",
+                    weights.SurroundSound, weights.HDR, weights.UnsupportedVideoCodec, weightsSectionExists);
+
+                var thresholds = ratingService.LoadRatingThresholds();
+                var thresholdsSectionExists = _configuration.GetSection("MediaPropertySettings:RatingThresholds").Exists();
+
+                return Ok(new
+                {
+                    properties = settings,
+                    weights = weights,
+                    weightsSectionExists = weightsSectionExists,
+                    thresholds = thresholds,
+                    thresholdsSectionExists = thresholdsSectionExists
+                });
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error getting compatibility settings");
-                return StatusCode(500, new { error = "Failed to load compatibility settings. Please try again." });
+                _logger.LogError(ex, "Error loading media property settings");
+                return StatusCode(500, new { error = $"Failed to load media property settings: {ex.Message}" });
             }
         }
 
-        [HttpPost("settings/compatibility")]
-        public async Task<ActionResult> SaveCompatibilitySettings([FromBody] List<CompatibilityOverride> overrides)
+        [HttpPost("settings/media-properties")]
+        public async Task<ActionResult> SaveMediaPropertySettings([FromBody] MediaPropertySettingsRequest request)
         {
             try
             {
-                // Get the path to appsettings.json
-                var contentRoot = _environment.ContentRootPath;
-                var configAppsettingsPath = System.IO.Path.Combine(contentRoot, "config", "appsettings.json");
-                var rootAppsettingsPath = System.IO.Path.Combine(contentRoot, "appsettings.json");
+                // Determine the correct appsettings.json path (same logic as Program.cs)
+                var configAppsettingsPath = Path.Combine(_environment.ContentRootPath, "config", "appsettings.json");
+                var rootAppsettingsPath = Path.Combine(_environment.ContentRootPath, "appsettings.json");
                 
-                string appsettingsPath;
+                string appSettingsPath;
                 if (System.IO.File.Exists(configAppsettingsPath))
                 {
-                    appsettingsPath = configAppsettingsPath;
+                    appSettingsPath = configAppsettingsPath;
                 }
                 else if (System.IO.File.Exists(rootAppsettingsPath))
                 {
-                    appsettingsPath = rootAppsettingsPath;
+                    appSettingsPath = rootAppsettingsPath;
                 }
                 else
                 {
-                    appsettingsPath = configAppsettingsPath;
+                    // Default to config directory (will be created if needed)
+                    appSettingsPath = configAppsettingsPath;
                 }
+                
+                _logger.LogInformation("Using appsettings.json path: {Path}", appSettingsPath);
 
-                // Ensure directory exists
-                if (!System.IO.Directory.Exists(System.IO.Path.GetDirectoryName(appsettingsPath)))
-                {
-                    System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(appsettingsPath)!);
-                }
-
-                // Read existing configuration
-                var jsonContent = System.IO.File.Exists(appsettingsPath) 
-                    ? await System.IO.File.ReadAllTextAsync(appsettingsPath) 
+                var jsonContent = System.IO.File.Exists(appSettingsPath) 
+                    ? System.IO.File.ReadAllText(appSettingsPath) 
                     : "{}";
 
-                // Validate JSON before parsing
-                try
-                {
-                    using var _ = System.Text.Json.JsonDocument.Parse(jsonContent);
-                }
-                catch (System.Text.Json.JsonException ex)
-                {
-                    _logger.LogError(ex, "Invalid JSON in appsettings.json before update");
-                    throw new InvalidOperationException("Invalid JSON in configuration file. Please fix the file manually.", ex);
-                }
-
-                // Parse JSON and update the CompatibilityOverrides section
                 var root = System.Text.Json.Nodes.JsonNode.Parse(jsonContent);
                 if (root == null)
                 {
                     root = new System.Text.Json.Nodes.JsonObject();
                 }
 
-                // Update CompatibilityOverrides section
-                var overridesArray = new System.Text.Json.Nodes.JsonArray();
-                foreach (var overrideItem in overrides)
+                // Update MediaPropertySettings section - ensure it's a JsonObject
+                System.Text.Json.Nodes.JsonObject mediaSettings;
+                if (root["MediaPropertySettings"] is System.Text.Json.Nodes.JsonObject existingSettings)
                 {
-                    if (string.IsNullOrEmpty(overrideItem.Codec) || 
-                        string.IsNullOrEmpty(overrideItem.Client) || 
-                        string.IsNullOrEmpty(overrideItem.SupportLevel) || 
-                        string.IsNullOrEmpty(overrideItem.Category))
-                    {
-                        _logger.LogWarning("Skipping invalid override: Codec={Codec}, Client={Client}, SupportLevel={SupportLevel}, Category={Category}", 
-                            overrideItem.Codec, overrideItem.Client, overrideItem.SupportLevel, overrideItem.Category);
-                        continue;
-                    }
-
-                    var overrideObj = new System.Text.Json.Nodes.JsonObject
-                    {
-                        ["Codec"] = overrideItem.Codec,
-                        ["Client"] = overrideItem.Client,
-                        ["SupportLevel"] = overrideItem.SupportLevel,
-                        ["Category"] = overrideItem.Category
-                    };
-                    overridesArray.Add(overrideObj);
+                    mediaSettings = existingSettings;
+                }
+                else
+                {
+                    mediaSettings = new System.Text.Json.Nodes.JsonObject();
+                }
+                
+                if (request.Properties != null)
+                {
+                    mediaSettings["VideoCodecs"] = System.Text.Json.JsonSerializer.SerializeToNode(request.Properties.VideoCodecs);
+                    mediaSettings["AudioCodecs"] = System.Text.Json.JsonSerializer.SerializeToNode(request.Properties.AudioCodecs);
+                    mediaSettings["Containers"] = System.Text.Json.JsonSerializer.SerializeToNode(request.Properties.Containers);
+                    mediaSettings["SubtitleFormats"] = System.Text.Json.JsonSerializer.SerializeToNode(request.Properties.SubtitleFormats);
+                    mediaSettings["BitDepths"] = System.Text.Json.JsonSerializer.SerializeToNode(request.Properties.BitDepths);
                 }
 
-                root["CompatibilityOverrides"] = overridesArray;
+                if (request.Weights != null)
+                {
+                    // Save RatingWeights as individual properties (not as nested object)
+                    // This ensures the configuration system can read them correctly
+                    System.Text.Json.Nodes.JsonObject ratingWeightsNode;
+                    if (mediaSettings["RatingWeights"] is System.Text.Json.Nodes.JsonObject existingWeights)
+                    {
+                        ratingWeightsNode = existingWeights;
+                    }
+                    else
+                    {
+                        ratingWeightsNode = new System.Text.Json.Nodes.JsonObject();
+                    }
+                    
+                    // Always save all properties from the request (frontend sends all values)
+                    // The frontend ensures all properties are present with valid values
+                    // Use JsonValue.Create to ensure proper numeric serialization
+                    ratingWeightsNode["SurroundSound"] = System.Text.Json.Nodes.JsonValue.Create((int)request.Weights.SurroundSound);
+                    ratingWeightsNode["HDR"] = System.Text.Json.Nodes.JsonValue.Create((int)request.Weights.HDR);
+                    ratingWeightsNode["HighBitrate"] = System.Text.Json.Nodes.JsonValue.Create((int)request.Weights.HighBitrate);
+                    ratingWeightsNode["IncorrectCodecTag"] = System.Text.Json.Nodes.JsonValue.Create((int)request.Weights.IncorrectCodecTag);
+                    ratingWeightsNode["UnsupportedVideoCodec"] = System.Text.Json.Nodes.JsonValue.Create((int)request.Weights.UnsupportedVideoCodec);
+                    ratingWeightsNode["UnsupportedAudioCodec"] = System.Text.Json.Nodes.JsonValue.Create((int)request.Weights.UnsupportedAudioCodec);
+                    ratingWeightsNode["UnsupportedContainer"] = System.Text.Json.Nodes.JsonValue.Create((int)request.Weights.UnsupportedContainer);
+                    ratingWeightsNode["UnsupportedSubtitleFormat"] = System.Text.Json.Nodes.JsonValue.Create((int)request.Weights.UnsupportedSubtitleFormat);
+                    ratingWeightsNode["UnsupportedBitDepth"] = System.Text.Json.Nodes.JsonValue.Create((int)request.Weights.UnsupportedBitDepth);
+                    ratingWeightsNode["FastStart"] = System.Text.Json.Nodes.JsonValue.Create((int)request.Weights.FastStart);
+                    ratingWeightsNode["HighBitrateThresholdMbps"] = System.Text.Json.Nodes.JsonValue.Create((double)request.Weights.HighBitrateThresholdMbps);
+                    
+                    mediaSettings["RatingWeights"] = ratingWeightsNode;
+                    
+                    // Log the exact values being saved
+                    _logger.LogInformation("Preparing to save rating weights - SurroundSound={SurroundSound}, HDR={HDR}, HighBitrate={HighBitrate}, UnsupportedVideoCodec={UnsupportedVideoCodec}",
+                        request.Weights.SurroundSound, request.Weights.HDR, request.Weights.HighBitrate, request.Weights.UnsupportedVideoCodec);
+                    
+                    _logger.LogInformation("Saved rating weights: SurroundSound={SurroundSound}, HDR={HDR}, HighBitrate={HighBitrate}, UnsupportedVideoCodec={UnsupportedVideoCodec}, UnsupportedAudioCodec={UnsupportedAudioCodec}, UnsupportedContainer={UnsupportedContainer}, HighBitrateThresholdMbps={HighBitrateThresholdMbps}",
+                        request.Weights.SurroundSound, request.Weights.HDR, request.Weights.HighBitrate, request.Weights.UnsupportedVideoCodec, request.Weights.UnsupportedAudioCodec, request.Weights.UnsupportedContainer, request.Weights.HighBitrateThresholdMbps);
+                }
 
-                // Write back to file with proper formatting
+                if (request.Thresholds != null)
+                {
+                    // Save RatingThresholds
+                    System.Text.Json.Nodes.JsonObject ratingThresholdsNode;
+                    if (mediaSettings["RatingThresholds"] is System.Text.Json.Nodes.JsonObject existingThresholds)
+                    {
+                        ratingThresholdsNode = existingThresholds;
+                    }
+                    else
+                    {
+                        ratingThresholdsNode = new System.Text.Json.Nodes.JsonObject();
+                    }
+                    
+                    ratingThresholdsNode["Optimal"] = System.Text.Json.Nodes.JsonValue.Create((int)request.Thresholds.Optimal);
+                    ratingThresholdsNode["Good"] = System.Text.Json.Nodes.JsonValue.Create((int)request.Thresholds.Good);
+                    
+                    mediaSettings["RatingThresholds"] = ratingThresholdsNode;
+                    
+                    _logger.LogInformation("Saved rating thresholds - Optimal={Optimal}, Good={Good}",
+                        request.Thresholds.Optimal, request.Thresholds.Good);
+                }
+
+                // Assign the mediaSettings object to root
+                root["MediaPropertySettings"] = mediaSettings;
+
+                // Write back to file
                 var options = new System.Text.Json.JsonSerializerOptions
                 {
-                    WriteIndented = true,
-                    Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+                    WriteIndented = true
                 };
-                var updatedJson = root.ToJsonString(options);
+                var jsonOutput = root.ToJsonString(options);
                 
-                // Validate the JSON we're about to write
+                // Ensure directory exists
+                var directory = System.IO.Path.GetDirectoryName(appSettingsPath);
+                if (!string.IsNullOrEmpty(directory) && !System.IO.Directory.Exists(directory))
+                {
+                    System.IO.Directory.CreateDirectory(directory);
+                }
+                
+                // Write to file with proper error handling
                 try
                 {
-                    using var _ = System.Text.Json.JsonDocument.Parse(updatedJson);
+                    // Check if file is writable
+                    var fileInfo = new System.IO.FileInfo(appSettingsPath);
+                    if (fileInfo.Exists && fileInfo.IsReadOnly)
+                    {
+                        _logger.LogWarning("appsettings.json is read-only at {Path}. Attempting to make it writable.", appSettingsPath);
+                        fileInfo.IsReadOnly = false;
+                    }
+                    
+                    // Use atomic write: write to temp file first, then replace
+                    var tempPath = appSettingsPath + ".tmp";
+                    System.IO.File.WriteAllText(tempPath, jsonOutput);
+                    
+                    // Replace the original file atomically
+                    System.IO.File.Move(tempPath, appSettingsPath, overwrite: true);
+                    
+                    _logger.LogInformation("Media property settings written to {Path}", appSettingsPath);
+                    
+                    // Verify file was written correctly by reading it back
+                    await System.Threading.Tasks.Task.Delay(200); // Give filesystem time to sync
+                    
+                    if (System.IO.File.Exists(appSettingsPath))
+                    {
+                        var verifyContent = System.IO.File.ReadAllText(appSettingsPath);
+                        var verifyRoot = System.Text.Json.Nodes.JsonNode.Parse(verifyContent);
+                        var mediaSettingsNode = verifyRoot?["MediaPropertySettings"];
+                        var ratingWeightsNode = mediaSettingsNode?["RatingWeights"] as System.Text.Json.Nodes.JsonObject;
+                        if (ratingWeightsNode != null)
+                        {
+                            var savedWeightsJson = ratingWeightsNode.ToJsonString();
+                            _logger.LogInformation("RatingWeights JSON structure saved and verified: {Json}", savedWeightsJson);
+                            
+                            // Verify each weight value individually
+                            _logger.LogInformation("Individual weight verification - SurroundSound: {SurroundSound}, HDR: {HDR}, HighBitrate: {HighBitrate}, UnsupportedVideoCodec: {UnsupportedVideoCodec}",
+                                ratingWeightsNode["SurroundSound"]?.ToString(),
+                                ratingWeightsNode["HDR"]?.ToString(),
+                                ratingWeightsNode["HighBitrate"]?.ToString(),
+                                ratingWeightsNode["UnsupportedVideoCodec"]?.ToString());
+                        }
+                        else
+                        {
+                            _logger.LogWarning("RatingWeights not found in saved file - verification failed! File content preview: {Preview}",
+                                verifyContent.Length > 500 ? verifyContent.Substring(0, 500) : verifyContent);
+                        }
+                    }
+                    else
+                    {
+                        _logger.LogError("File was not created at {Path}", appSettingsPath);
+                    }
                 }
-                catch (System.Text.Json.JsonException ex)
+                catch (UnauthorizedAccessException uaEx)
                 {
-                    _logger.LogError(ex, "Generated invalid JSON when saving compatibility overrides");
-                    throw new InvalidOperationException("Failed to generate valid JSON. Please try again.", ex);
+                    _logger.LogError(uaEx, "Permission denied writing to {Path}. The config directory may be read-only. Values will not persist after reboot.", appSettingsPath);
+                    // Don't throw - allow the request to complete, but log the error
+                    return StatusCode(500, new { error = "Failed to save settings: Configuration file is read-only. Please ensure the config directory is writable." });
                 }
-
-                await System.IO.File.WriteAllTextAsync(appsettingsPath, updatedJson);
-                _logger.LogInformation("Compatibility overrides written to {Path}", appsettingsPath);
+                catch (Exception writeEx)
+                {
+                    _logger.LogError(writeEx, "Failed to write media property settings to {Path}", appSettingsPath);
+                    throw;
+                }
 
                 // Wait a moment to ensure file is fully written
                 await System.Threading.Tasks.Task.Delay(100);
 
-                // Reload configuration if IConfigurationRoot is available
+                // Reload configuration to pick up changes
                 try
                 {
                     if (_configuration is Microsoft.Extensions.Configuration.IConfigurationRoot configRoot)
                     {
                         configRoot.Reload();
-                        _logger.LogInformation("Configuration reloaded successfully");
+                        _logger.LogInformation("Configuration reloaded after saving media property settings");
                         
-                        // Verify the reload worked by checking if we can read the overrides
-                        await System.Threading.Tasks.Task.Delay(50);
-                        var verifySection = configRoot.GetSection("CompatibilityOverrides");
-                        if (verifySection.Exists())
+                        // Verify weights were loaded correctly after reload
+                        await System.Threading.Tasks.Task.Delay(100); // Additional delay for config reload
+                        var ratingService = new MediaPropertyRatingService(_configuration, _logger);
+                        var loadedWeights = ratingService.LoadRatingWeights();
+                        _logger.LogInformation("Verification - Loaded weights after save and reload: SurroundSound={SurroundSound}, HDR={HDR}, HighBitrate={HighBitrate}, UnsupportedVideoCodec={UnsupportedVideoCodec}",
+                            loadedWeights.SurroundSound, loadedWeights.HDR, loadedWeights.HighBitrate, loadedWeights.UnsupportedVideoCodec);
+                        
+                        // Double-check by reading the file directly (bypassing configuration system)
+                        if (System.IO.File.Exists(appSettingsPath))
                         {
-                            var verifyOverrides = verifySection.Get<List<CompatibilityOverride>>();
-                            _logger.LogInformation("Verified configuration reload: {Count} overrides found", verifyOverrides?.Count ?? 0);
+                            try
+                            {
+                                var directRead = System.IO.File.ReadAllText(appSettingsPath);
+                                var directRoot = System.Text.Json.Nodes.JsonNode.Parse(directRead);
+                                var directMediaSettings = directRoot?["MediaPropertySettings"];
+                                var directWeights = directMediaSettings?["RatingWeights"] as System.Text.Json.Nodes.JsonObject;
+                                if (directWeights != null)
+                                {
+                                    _logger.LogInformation("Direct file read verification - SurroundSound: {SurroundSound}, HDR: {HDR}, HighBitrate: {HighBitrate}",
+                                        directWeights["SurroundSound"]?.ToString(), 
+                                        directWeights["HDR"]?.ToString(),
+                                        directWeights["HighBitrate"]?.ToString());
+                                    
+                                    // Compare saved vs loaded
+                                    if (request.Weights != null)
+                                    {
+                                        var savedSurroundSound = request.Weights.SurroundSound;
+                                        var loadedSurroundSound = loadedWeights.SurroundSound;
+                                        if (savedSurroundSound != loadedSurroundSound)
+                                        {
+                                            _logger.LogWarning("Mismatch detected! Saved SurroundSound={Saved}, but loaded SurroundSound={Loaded}",
+                                                savedSurroundSound, loadedSurroundSound);
+                                        }
+                                    }
+                                }
+                                else
+                                {
+                                    _logger.LogWarning("RatingWeights not found in direct file read - file may not have been written correctly");
+                                }
+                            }
+                            catch (Exception verifyEx)
+                            {
+                                _logger.LogError(verifyEx, "Error during direct file verification");
+                            }
                         }
                     }
                     else
@@ -1596,28 +2304,39 @@ namespace Optimarr.Controllers
                     _logger.LogWarning(reloadEx, "Failed to reload configuration, but settings were saved. Changes may require restart to take effect.");
                 }
 
-                _logger.LogInformation("Compatibility overrides saved: {Count} overrides", overrides.Count);
-
-                // Recalculate compatibility for all existing videos
+                // Recalculate compatibility for all videos in background with new scope
                 _ = Task.Run(async () =>
                 {
                     try
                     {
-                        await RecalculateCompatibilityForAllVideosAsync();
+                        using var scope = _scopeFactory.CreateScope();
+                        var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                        var videoAnalyzer = scope.ServiceProvider.GetRequiredService<VideoAnalyzerService>();
+                        var logger = scope.ServiceProvider.GetRequiredService<ILogger<LibraryController>>();
+                        var configuration = scope.ServiceProvider.GetRequiredService<IConfiguration>();
+                        
+                        await RecalculateCompatibilityForAllVideosAsync(dbContext, videoAnalyzer, logger, configuration);
                     }
                     catch (Exception ex)
                     {
-                        _logger.LogError(ex, "Error recalculating compatibility after compatibility settings change");
+                        _logger.LogError(ex, "Error recalculating compatibility after media property settings change");
                     }
                 });
 
-                return Ok(new { message = "Compatibility settings saved successfully. Compatibility is being recalculated for all videos." });
+                return Ok(new { message = "Media property settings saved successfully. Compatibility is being recalculated for all videos." });
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error saving compatibility settings");
-                return StatusCode(500, new { error = "Failed to save compatibility settings", message = ex.Message });
+                _logger.LogError(ex, "Error saving media property settings");
+                return StatusCode(500, new { error = $"Failed to save media property settings: {ex.Message}" });
             }
+        }
+
+        public class MediaPropertySettingsRequest
+        {
+            public MediaPropertySettings? Properties { get; set; }
+            public RatingWeights? Weights { get; set; }
+            public RatingThresholds? Thresholds { get; set; }
         }
 
         private List<string> FindAllExternalSubtitles(string videoPath)
@@ -2018,13 +2737,18 @@ namespace Optimarr.Controllers
         {
             try
             {
+                if (request == null)
+                {
+                    return BadRequest(new { error = "Request body is required" });
+                }
+
                 _logger.LogInformation("Received Tdarr webhook notification: Status={Status}, File={File}", 
-                    request?.Status, request?.File);
+                    request.Status, request.File);
 
                 // Get file path from request (Tdarr may send it in different fields)
                 var filePath = request.GetFilePath();
                 
-                if (request == null || string.IsNullOrEmpty(filePath))
+                if (string.IsNullOrEmpty(filePath))
                 {
                     _logger.LogWarning("Invalid Tdarr webhook request: missing file path. Request: {Request}", 
                         System.Text.Json.JsonSerializer.Serialize(request));
@@ -2166,6 +2890,28 @@ namespace Optimarr.Controllers
                 .Replace('\\', '/')
                 .TrimEnd('/')
                 .ToLowerInvariant();
+        }
+
+        // Helper method to extract and normalize title from filename (without extension)
+        private string NormalizeTitle(string fileName)
+        {
+            if (string.IsNullOrEmpty(fileName))
+                return string.Empty;
+
+            try
+            {
+                // Get filename without extension
+                var title = System.IO.Path.GetFileNameWithoutExtension(fileName);
+                if (string.IsNullOrEmpty(title))
+                    return string.Empty;
+
+                // Normalize: lowercase, trim whitespace
+                return title.Trim().ToLowerInvariant();
+            }
+            catch
+            {
+                return fileName.ToLowerInvariant();
+            }
         }
 
         [HttpPost("videos/rescan")]
@@ -2311,7 +3057,7 @@ namespace Optimarr.Controllers
                         // Recalculate OverallScore
                         var recalculatedScore = CalculateOverallScore(
                             video.CompatibilityRating, 
-                            video.RemuxClients, 
+                            0, 
                             video.VideoCodec, 
                             video.BitDepth);
 
@@ -2464,7 +3210,7 @@ namespace Optimarr.Controllers
                                 videoRecord.Recommendations = System.Text.Json.JsonSerializer.Serialize(compatibilityResult?.Recommendations ?? new List<string>(), audioJsonOptions);
                                 videoRecord.ClientResults = System.Text.Json.JsonSerializer.Serialize(compatibilityResult?.ClientResults ?? new Dictionary<string, ClientCompatibility>(), audioJsonOptions);
                                 
-                                var recalculatedScore = CalculateOverallScore(videoRecord.CompatibilityRating, videoRecord.RemuxClients, videoRecord.VideoCodec, videoRecord.BitDepth);
+                                var recalculatedScore = CalculateOverallScore(videoRecord.CompatibilityRating, 0, videoRecord.VideoCodec, videoRecord.BitDepth);
                                 if (Enum.TryParse<CompatibilityScore>(recalculatedScore, true, out var parsedScore))
                                 {
                                     videoRecord.OverallScore = parsedScore;
@@ -2626,29 +3372,24 @@ namespace Optimarr.Controllers
         {
             try
             {
-                // Delete file from disk if it exists
-                if (fileExists)
-                {
-                    try
-                    {
-                        System.IO.File.Delete(filePath);
-                        _logger.LogInformation("Deleted file from disk: {FilePath}", filePath);
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogWarning(ex, "Failed to delete file from disk: {FilePath}", filePath);
-                    }
-                }
-
-                // Delete from Sonarr if episode file ID exists
+                // Delete from Sonarr if episode file ID exists (Sonarr will handle file deletion)
                 if (episode.EpisodeFileId.HasValue)
                 {
                     var deleted = await sonarrService.DeleteEpisodeFile(episode.EpisodeFileId.Value);
                     if (deleted)
                     {
-                        _logger.LogInformation("Deleted episode file from Sonarr: EpisodeFileId={EpisodeFileId}", 
+                        _logger.LogInformation("Deleted episode file from Sonarr: EpisodeFileId={EpisodeFileId} (Sonarr will handle file deletion)", 
                             episode.EpisodeFileId.Value);
                     }
+                    else
+                    {
+                        _logger.LogWarning("Failed to delete episode file from Sonarr: EpisodeFileId={EpisodeFileId}", 
+                            episode.EpisodeFileId.Value);
+                    }
+                }
+                else
+                {
+                    _logger.LogWarning("Cannot delete file through Sonarr: EpisodeFileId is missing for file: {FilePath}", filePath);
                 }
 
                 // Trigger search
@@ -2689,29 +3430,24 @@ namespace Optimarr.Controllers
         {
             try
             {
-                // Delete file from disk if it exists
-                if (fileExists)
-                {
-                    try
-                    {
-                        System.IO.File.Delete(filePath);
-                        _logger.LogInformation("Deleted file from disk: {FilePath}", filePath);
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogWarning(ex, "Failed to delete file from disk: {FilePath}", filePath);
-                    }
-                }
-
-                // Delete from Radarr
+                // Delete from Radarr (Radarr will handle file deletion)
                 if (movie.MovieFile != null)
                 {
                     var deleted = await radarrService.DeleteMovieFile(movie.MovieFile.Id);
                     if (deleted)
                     {
-                        _logger.LogInformation("Deleted movie file from Radarr: MovieFileId={MovieFileId}", 
+                        _logger.LogInformation("Deleted movie file from Radarr: MovieFileId={MovieFileId} (Radarr will handle file deletion)", 
                             movie.MovieFile.Id);
                     }
+                    else
+                    {
+                        _logger.LogWarning("Failed to delete movie file from Radarr: MovieFileId={MovieFileId}", 
+                            movie.MovieFile.Id);
+                    }
+                }
+                else
+                {
+                    _logger.LogWarning("Cannot delete file through Radarr: MovieFile is null for file: {FilePath}", filePath);
                 }
 
                 // Trigger search
@@ -2975,8 +3711,14 @@ namespace Optimarr.Controllers
         public long TotalSize { get; set; }
         public double TotalDuration { get; set; }
         public int HdrCount { get; set; }
+        public int SdrCount { get; set; }
         public Dictionary<string, int> CodecDistribution { get; set; } = new();
         public Dictionary<string, int> ContainerDistribution { get; set; } = new();
+        public Dictionary<string, int> AudioCodecDistribution { get; set; } = new();
+        public Dictionary<string, int> AudioChannelDistribution { get; set; } = new();
+        public Dictionary<string, int> BitDepthDistribution { get; set; } = new();
+        public Dictionary<string, int> SubtitleFormatDistribution { get; set; } = new();
+        public Dictionary<string, int> BitrateRangeDistribution { get; set; } = new();
         public List<LibraryScan> RecentScans { get; set; } = new();
     }
 
@@ -2989,9 +3731,6 @@ namespace Optimarr.Controllers
     {
         public string Score { get; set; } = string.Empty;
         public int Count { get; set; }
-        public int AvgDirectPlay { get; set; }
-        public int AvgRemux { get; set; }
-        public int AvgTranscode { get; set; }
     }
 
     public class IssueSummary
@@ -3002,9 +3741,7 @@ namespace Optimarr.Controllers
         public string VideoCodec { get; set; } = string.Empty;
         public string Container { get; set; } = string.Empty;
         public string OverallScore { get; set; } = string.Empty;
-        public int DirectPlayClients { get; set; }
-        public int RemuxClients { get; set; }
-        public int TranscodeClients { get; set; }
+        public int CompatibilityRating { get; set; }
         public bool IsHDR { get; set; }
     }
 
@@ -3042,6 +3779,8 @@ namespace Optimarr.Controllers
     {
         public List<string> Codecs { get; set; } = new();
         public List<string> Containers { get; set; } = new();
+        public List<string> AudioCodecs { get; set; } = new();
+        public List<string> SubtitleFormats { get; set; } = new();
     }
 
     public class RatingSettings

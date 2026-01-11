@@ -129,13 +129,14 @@ namespace Optimarr.Controllers
 
                             // Update video record with new compatibility data
                             video.CompatibilityRating = compatibilityResult.CompatibilityRating;
-                            video.DirectPlayClients = compatibilityResult.ClientResults.Values.Count(r => r.Status == "Direct Play");
-                            video.RemuxClients = compatibilityResult.ClientResults.Values.Count(r => r.Status == "Remux");
-                            video.TranscodeClients = compatibilityResult.ClientResults.Values.Count(r => r.Status == "Transcode");
                             video.OverallScore = ParseScore(compatibilityResult.OverallScore);
                             video.Issues = System.Text.Json.JsonSerializer.Serialize(compatibilityResult.Issues);
                             video.Recommendations = System.Text.Json.JsonSerializer.Serialize(compatibilityResult.Recommendations);
-                            video.ClientResults = System.Text.Json.JsonSerializer.Serialize(compatibilityResult.ClientResults);
+                            // Clear old client-based fields (deprecated)
+                            video.DirectPlayClients = 0;
+                            video.RemuxClients = 0;
+                            video.TranscodeClients = 0;
+                            video.ClientResults = "{}";
 
                             // Generate new report
                             var reportGenerator = new ReportGenerator();
@@ -384,26 +385,36 @@ namespace Optimarr.Controllers
                 
                 _logger.LogInformation("Starting playback history sync {DateRange}", 
                     startDate.HasValue ? $"(last {days} days)" : "(all historical data)");
-                
-                var historyItems = await _jellyfinService.GetPlaybackHistoryAsync(startDate, DateTime.UtcNow);
-                
-                _logger.LogInformation("Retrieved {Count} playback history items from Jellyfin", historyItems.Count);
 
                 var syncedCount = 0;
                 var matchedCount = 0;
+                var skippedCount = 0;
+                var totalProcessed = 0;
+                const int batchSize = 50; // Save in batches to balance performance and progress visibility
+                var batch = new List<PlaybackHistory>();
 
-                foreach (var item in historyItems)
+                // Process items as they arrive (streaming)
+                await foreach (var item in _jellyfinService.GetPlaybackHistoryStreamAsync(startDate, DateTime.UtcNow))
                 {
-                    if (string.IsNullOrEmpty(item.Path)) continue;
+                    totalProcessed++;
+                    if (string.IsNullOrEmpty(item.Path))
+                    {
+                        skippedCount++;
+                        continue;
+                    }
 
-                    // Check if already exists
+                    // Check if already exists (duplicate check)
                     var existing = await _dbContext.PlaybackHistories
                         .FirstOrDefaultAsync(p => 
                             p.JellyfinItemId == item.ItemId && 
                             p.PlaybackStartTime == item.PlaybackStartTime &&
                             p.JellyfinUserId == item.UserId);
 
-                    if (existing != null) continue;
+                    if (existing != null)
+                    {
+                        skippedCount++;
+                        continue;
+                    }
 
                     var playback = new PlaybackHistory
                     {
@@ -432,25 +443,41 @@ namespace Optimarr.Controllers
                     // Try to match with local library
                     await MatchPlaybackWithLibrary(playback);
 
-                    _dbContext.PlaybackHistories.Add(playback);
+                    batch.Add(playback);
                     syncedCount++;
                     
                     if (playback.VideoAnalysisId != null || playback.LibraryPathId != null)
                     {
                         matchedCount++;
                     }
+
+                    // Save batch when it reaches the batch size
+                    if (batch.Count >= batchSize)
+                    {
+                        _dbContext.PlaybackHistories.AddRange(batch);
+                        await _dbContext.SaveChangesAsync();
+                        _logger.LogDebug("Saved batch of {Count} playback records (total synced: {Total})", batch.Count, syncedCount);
+                        batch.Clear();
+                    }
                 }
 
-                await _dbContext.SaveChangesAsync();
+                // Save any remaining items in the batch
+                if (batch.Count > 0)
+                {
+                    _dbContext.PlaybackHistories.AddRange(batch);
+                    await _dbContext.SaveChangesAsync();
+                    _logger.LogDebug("Saved final batch of {Count} playback records", batch.Count);
+                }
 
-                _logger.LogInformation("Synced {SyncedCount} playback records, matched {MatchedCount} with local libraries", 
-                    syncedCount, matchedCount);
+                _logger.LogInformation("Synced {SyncedCount} playback records, matched {MatchedCount} with local libraries, skipped {SkippedCount} (duplicates or invalid), total processed: {TotalProcessed}", 
+                    syncedCount, matchedCount, skippedCount, totalProcessed);
 
                 return Ok(new
                 {
                     synced = syncedCount,
                     matched = matchedCount,
-                    total = historyItems.Count
+                    skipped = skippedCount,
+                    total = totalProcessed
                 });
             }
             catch (Exception ex)
@@ -468,21 +495,28 @@ namespace Optimarr.Controllers
             var normalizedPlaybackPath = NormalizePath(playback.FilePath);
 
             // Step 1: Try to match with VideoAnalysis by file path (exact match)
-            var videoAnalysis = await _dbContext.VideoAnalyses
-                .FirstOrDefaultAsync(v => NormalizePath(v.FilePath) == normalizedPlaybackPath);
+            // Load video analyses into memory to avoid LINQ translation issues with NormalizePath
+            var allVideoAnalyses = await _dbContext.VideoAnalyses
+                .Select(v => new { v.Id, v.FilePath, v.FileName })
+                .ToListAsync();
 
-            if (videoAnalysis != null)
+            foreach (var video in allVideoAnalyses)
             {
-                playback.VideoAnalysisId = videoAnalysis.Id;
+                if (!string.IsNullOrEmpty(video.FilePath))
+                {
+                    var normalizedVideoPath = NormalizePath(video.FilePath);
+                    if (normalizedVideoPath == normalizedPlaybackPath)
+                    {
+                        playback.VideoAnalysisId = video.Id;
+                        break;
+                    }
+                }
             }
 
             // Step 2: If path matching failed, try name-based matching
-            if (videoAnalysis == null && !string.IsNullOrEmpty(playback.ItemName))
+            if (playback.VideoAnalysisId == null && !string.IsNullOrEmpty(playback.ItemName))
             {
-                // Load all video analyses into memory to avoid LINQ translation issues
-                var allVideoAnalyses = await _dbContext.VideoAnalyses
-                    .Select(v => new { v.Id, v.FilePath, v.FileName })
-                    .ToListAsync();
+                // allVideoAnalyses already loaded above, reuse it
 
                 var normalizedItemName = NormalizeName(playback.ItemName);
 
@@ -694,178 +728,6 @@ namespace Optimarr.Controllers
             }
         }
 
-        [HttpGet("clients")]
-        public ActionResult<object> GetClients()
-        {
-            try
-            {
-                // Get all available Jellyfin clients for compatibility settings
-                var allClients = Services.JellyfinCompatibilityData.AllClients.ToList();
-                
-                // Get disabled clients from configuration
-                var disabledClientsSection = _configuration?.GetSection("CompatibilityRating:DisabledClients");
-                var clients = new Dictionary<string, bool>();
-                
-                foreach (var client in allClients)
-                {
-                    var isDisabled = disabledClientsSection?.GetValue<bool>(client) ?? false;
-                    clients[client] = !isDisabled; // true = enabled, false = disabled
-                }
-
-                return Ok(new
-                {
-                    clients = clients,
-                    allClients = allClients
-                });
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error getting clients");
-                return StatusCode(500, new { error = ex.Message });
-            }
-        }
-
-        [HttpPost("clients")]
-        public async Task<ActionResult> SaveClientSettings([FromBody] ClientSettingsRequest request)
-        {
-            try
-            {
-                // Get the path to appsettings.json
-                var contentRoot = _environment.ContentRootPath;
-                var configAppsettingsPath = System.IO.Path.Combine(contentRoot, "config", "appsettings.json");
-                var rootAppsettingsPath = System.IO.Path.Combine(contentRoot, "appsettings.json");
-                
-                string appsettingsPath;
-                if (System.IO.File.Exists(configAppsettingsPath))
-                {
-                    appsettingsPath = configAppsettingsPath;
-                }
-                else if (System.IO.File.Exists(rootAppsettingsPath))
-                {
-                    appsettingsPath = rootAppsettingsPath;
-                }
-                else
-                {
-                    appsettingsPath = configAppsettingsPath;
-                }
-
-                // Ensure directory exists
-                if (!System.IO.Directory.Exists(System.IO.Path.GetDirectoryName(appsettingsPath)))
-                {
-                    System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(appsettingsPath)!);
-                }
-
-                // Read existing configuration
-                var jsonContent = System.IO.File.Exists(appsettingsPath) 
-                    ? await System.IO.File.ReadAllTextAsync(appsettingsPath) 
-                    : "{}";
-
-                // Validate JSON before parsing
-                try
-                {
-                    using var _ = System.Text.Json.JsonDocument.Parse(jsonContent);
-                }
-                catch (System.Text.Json.JsonException ex)
-                {
-                    _logger.LogError(ex, "Invalid JSON in appsettings.json before update");
-                    throw new InvalidOperationException("Invalid JSON in configuration file. Please fix the file manually.", ex);
-                }
-
-                // Parse JSON and update the CompatibilityRating:DisabledClients section
-                var root = System.Text.Json.Nodes.JsonNode.Parse(jsonContent);
-                if (root == null)
-                {
-                    root = new System.Text.Json.Nodes.JsonObject();
-                }
-
-                // Get all available clients
-                var allClients = Services.JellyfinCompatibilityData.AllClients.ToList();
-                
-                // Create or update CompatibilityRating section
-                if (root["CompatibilityRating"] == null)
-                {
-                    root["CompatibilityRating"] = new System.Text.Json.Nodes.JsonObject();
-                }
-                
-                var compatibilityRating = root["CompatibilityRating"]!.AsObject();
-                
-                // Create or update DisabledClients section
-                var disabledClients = new System.Text.Json.Nodes.JsonObject();
-                
-                foreach (var client in allClients)
-                {
-                    // Client is disabled if it's not in the request or if it's explicitly set to false
-                    var isEnabled = request.Clients != null && request.Clients.TryGetValue(client, out var enabled) && enabled;
-                    disabledClients[client] = !isEnabled;
-                }
-                
-                compatibilityRating["DisabledClients"] = disabledClients;
-
-                // Write back to file
-                var options = new System.Text.Json.JsonSerializerOptions
-                {
-                    WriteIndented = true,
-                    Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
-                };
-                var updatedJson = root.ToJsonString(options);
-                
-                // Validate the JSON we're about to write
-                try
-                {
-                    using var _ = System.Text.Json.JsonDocument.Parse(updatedJson);
-                }
-                catch (System.Text.Json.JsonException ex)
-                {
-                    _logger.LogError(ex, "Generated invalid JSON when saving client settings");
-                    throw new InvalidOperationException("Failed to generate valid JSON. Please try again.", ex);
-                }
-
-                await System.IO.File.WriteAllTextAsync(appsettingsPath, updatedJson);
-                _logger.LogInformation("Client settings written to {Path}", appsettingsPath);
-
-                // Wait a moment to ensure file is fully written
-                await System.Threading.Tasks.Task.Delay(100);
-
-                // Reload configuration
-                try
-                {
-                    if (_configuration is Microsoft.Extensions.Configuration.IConfigurationRoot configRoot)
-                    {
-                        configRoot.Reload();
-                        _logger.LogInformation("Configuration reloaded successfully");
-                    }
-                }
-                catch (Exception reloadEx)
-                {
-                    _logger.LogWarning(reloadEx, "Failed to reload configuration, but settings were saved. Changes may require restart to take effect.");
-                }
-
-                _logger.LogInformation("Client settings saved: {EnabledCount} enabled, {DisabledCount} disabled", 
-                    request.Clients?.Count(c => c.Value) ?? 0,
-                    allClients.Count - (request.Clients?.Count(c => c.Value) ?? 0));
-
-                // Recalculate compatibility for all existing videos
-                _ = Task.Run(async () =>
-                {
-                    try
-                    {
-                        await RecalculateCompatibilityForAllVideosAsync();
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogError(ex, "Error recalculating compatibility after client settings change");
-                    }
-                });
-
-                return Ok(new { message = "Client settings saved successfully. Compatibility is being recalculated for all videos." });
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error saving client settings");
-                return StatusCode(500, new { error = $"Failed to save client settings: {ex.Message}" });
-            }
-        }
-
         [HttpGet("clients/used")]
         public async Task<ActionResult<object>> GetUsedClients()
         {
@@ -1042,6 +904,52 @@ namespace Optimarr.Controllers
             }
         }
 
+        [HttpGet("history/video/{videoId}")]
+        public async Task<ActionResult<object>> GetPlaybackHistoryForVideo(int videoId)
+        {
+            try
+            {
+                var items = await _dbContext.PlaybackHistories
+                    .Where(p => p.VideoAnalysisId == videoId)
+                    .Include(p => p.VideoAnalysis)
+                    .Include(p => p.LibraryPath)
+                    .OrderByDescending(p => p.PlaybackStartTime)
+                    .Select(p => new
+                    {
+                        id = p.Id,
+                        itemName = p.ItemName,
+                        filePath = p.FilePath,
+                        playbackStartTime = p.PlaybackStartTime,
+                        playbackStopTime = p.PlaybackStopTime,
+                        playbackDuration = p.PlaybackDuration,
+                        clientName = p.ClientName,
+                        deviceName = p.DeviceName,
+                        userName = p.JellyfinUserName,
+                        playMethod = p.PlayMethod,
+                        isDirectPlay = p.IsDirectPlay,
+                        isDirectStream = p.IsDirectStream,
+                        isTranscode = p.IsTranscode,
+                        transcodeReason = p.TranscodeReason,
+                        hardwareAccelerationType = p.HardwareAccelerationType,
+                        videoAnalysisId = p.VideoAnalysisId,
+                        libraryPathId = p.LibraryPathId,
+                        libraryPathName = p.LibraryPath != null ? p.LibraryPath.Name : null
+                    })
+                    .ToListAsync();
+
+                return Ok(new
+                {
+                    items,
+                    total = items.Count
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error getting playback history for video {VideoId}", videoId);
+                return StatusCode(500, new { error = ex.Message });
+            }
+        }
+
         [HttpPost("rematch")]
         public async Task<ActionResult<object>> RematchPlaybackHistory()
         {
@@ -1115,9 +1023,5 @@ namespace Optimarr.Controllers
         public bool Enabled { get; set; }
     }
 
-    public class ClientSettingsRequest
-    {
-        public Dictionary<string, bool>? Clients { get; set; }
-    }
 }
 

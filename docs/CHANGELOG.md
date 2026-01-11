@@ -8,6 +8,89 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.2.0] - 2026-01-11
+
+### Changed - Major Architecture Update
+- **Rating System Overhaul**: Completely redesigned compatibility rating system from client-based (0-11 scale) to property-based (0-100 scale)
+  - Videos are now rated based on their media properties (codecs, containers, bit depth, HDR, etc.) rather than Jellyfin client compatibility
+  - Rating starts at 100 and deducts points for unsupported properties based on configurable weights
+  - Users can configure which media properties are "supported" or "unsupported" in settings
+  - Rating impact weights are configurable for each property type (video codec, audio codec, container, etc.)
+  - Overall score thresholds (Optimal, Good, Poor) are now configurable in settings (defaults: Optimal ≥80, Good ≥60, Poor <60)
+
+### Removed
+- **Jellyfin Client Compatibility System**: Removed all client-based compatibility features
+  - Deleted `JellyfinCompatibilityData.cs` service containing hardcoded client compatibility matrix
+  - Removed client compatibility modal and UI components
+  - Removed "Jellyfin Clients" section from settings
+  - Removed "Client Compatibility Overrides" section from settings
+  - Removed "Understanding Compatibility Ratings" information banner from dashboard
+  - Removed "Client Compatibility Overview" from dashboard
+  - Removed `GetClientCompatibilityStats()` API endpoint
+  - Removed client-related statistics from dashboard (avgDirectPlayClients, videosWithTranscoding)
+  - Removed old client-based fallback code from `VideoAnalyzerService`
+  - Removed unused helper methods: `GetEnabledClients()`, `LoadCodecThresholds()`, `GetCompatibilityOverrides()`, etc.
+
+### Added
+- **Media Property Settings**: New settings section for configuring supported media properties
+  - Configure supported/unsupported status for video codecs, audio codecs, containers, subtitle formats, and bit depths
+  - Default settings are provided for common media properties
+  - Settings can be initialized with defaults if empty
+
+- **Rating Impact Weights**: Configurable weights for how different properties affect the rating
+  - Stereo Sound impact weight (penalizes when all audio tracks are stereo, ≤2 channels)
+  - SDR Content impact weight (penalizes when video is SDR, no HDR)
+  - High Bitrate impact weight
+  - Incorrect Codec Tag impact weight
+  - Unsupported Video Codec impact weight
+  - Unsupported Audio Codec impact weight
+  - Unsupported Container impact weight
+  - Unsupported Subtitle Format impact weight
+  - Unsupported Bit Depth impact weight
+  - High Bitrate Threshold (Mbps)
+
+- **Configurable Rating Thresholds**: Users can configure Optimal/Good/Poor thresholds
+  - Optimal Threshold (default: 80) - minimum rating for "Optimal" classification
+  - Good Threshold (default: 60) - minimum rating for "Good" classification
+  - Ratings below Good threshold are classified as "Poor"
+
+- **Rating Details Modal**: Click on rating in media info to see detailed breakdown
+  - Shows starting rating (100), deductions, and final rating
+  - Displays all issues and recommendations
+  - Explains how the rating system works
+
+### Changed
+- **Database Migration**: Automatic migration of old 0-11 ratings to new 0-100 scale
+  - Old ratings are detected and recalculated using the new property-based system
+  - Old client-based fields (DirectPlayClients, RemuxClients, TranscodeClients, ClientResults) are cleared during migration
+  - Migration runs automatically on application startup
+
+- **API Changes**:
+  - `GetMediaPropertySettings()` now returns configurable thresholds (Optimal, Good)
+  - `SaveMediaPropertySettings()` now accepts thresholds for saving
+  - Removed `GetClientCompatibilityStats()` endpoint
+  - Dashboard endpoints no longer return client-related statistics
+  - Dashboard now uses configurable thresholds for compatibility distribution
+
+- **UI Changes**:
+  - Rating display changed from "X/11" to "X/100" throughout the application
+  - Dashboard issues now show compatibility rating instead of transcode client count
+  - Removed client-related summary items from dashboard
+
+### Technical Details
+- **New Service**: `MediaPropertyRatingService` handles all rating calculations
+- **Models**: `MediaPropertySettings`, `RatingWeights`, `RatingThresholds` (configurable)
+- **Migration**: `DatabaseMigrationService` includes automatic rating migration logic
+- **Backward Compatibility**: Old ratings are automatically migrated to new system
+- **Rating Logic**: Stereo Sound and SDR Content now penalize (inverted from previous logic)
+
+### Database Impact
+- **Migration Required**: Yes - Ratings are automatically migrated from 0-11 to 0-100 scale
+- **Backward Compatible**: Yes - Old data is preserved and migrated automatically
+- **Deprecated Fields**: DirectPlayClients, RemuxClients, TranscodeClients, ClientResults (kept for backward compatibility but cleared)
+
+---
+
 ## [1.1.4] - 2025-01-09
 
 ### Fixed

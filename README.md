@@ -1,72 +1,35 @@
 # Optimarr - Media Optimization
 
-A web-based application for analyzing video files to determine their compatibility with media server clients. Built in the Servarr family style with integration support for Sonarr, Radarr, and Jellyfin.
+A web-based application for analyzing video files to determine their compatibility based on media properties. Built in the Servarr family style with integration support for Sonarr, Radarr, and Jellyfin.
 
 ## ⚠️ Disclaimer
 
 **This software is in early development stage. Use it at your own risk. The developers are not responsible for any data loss, system damage, or other issues that may arise from using this software. Always backup your data before installation and use.**
 
-### Support the Project
-
-If you find Optimarr useful, consider supporting the project:
-
-[![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-FFDD00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black)](https://buymeacoffee.com/bridgemill)
-
-[Support on Buy Me a Coffee](https://buymeacoffee.com/bridgemill)
-
 ## Features
 
-### Core Functionality
-- **Video Analysis**: Analyze video files to determine Direct Play compatibility with media server clients
-- **Subtitle Support**: Analyze external subtitle files alongside video files
-- **Compatibility Rating**: 0-11 rating scale based on number of clients that can Direct Play
-- **Comprehensive Reports**: Detailed compatibility reports with per-client breakdown
-- **Library Management**: Scan and manage multiple video libraries
-- **Background Scanning**: Library scans run in background and persist across page reloads
-
-### Integrations
-- **Sonarr Integration**: Connect with Sonarr for TV series analysis and automated redownloads
-- **Radarr Integration**: Connect with Radarr for movie analysis and automated redownloads
-- **Jellyfin Integration**: 
-  - Sync playback history from Jellyfin
-  - Match playback data with local library files
-  - View client compatibility statistics
-  - Track direct play vs transcode patterns
-- **Tdarr Integration**: 
-  - Webhook support for automatic rescan after transcoding
-  - Automatically updates video analysis when Tdarr completes transcoding
-
-### User Interface
+- **Video Analysis**: Analyze video files based on media properties (codecs, containers, bit depth, HDR, etc.)
+- **Compatibility Rating**: 0-100 rating scale with configurable thresholds and impact weights
+- **Library Management**: Scan and manage multiple video libraries with background processing
+- **Servarr Integration**: Sonarr, Radarr, and Jellyfin integration for automated analysis and redownloads
+- **Tdarr Webhook**: Automatic rescan after transcoding
 - **Modern Web UI**: Servarr-style dark theme interface
-- **Browse View**: Filter, sort, and search through analyzed videos
-- **Playback History**: View Jellyfin playback history with filtering and statistics
-- **Dashboard**: Overview statistics and charts
-- **Bulk Operations**: Select and redownload multiple videos at once
-
-### API & Technical
-- **RESTful API**: Full API support for integration with other tools
-- **Docker Support**: Pre-built Docker images available on Docker Hub
-- **Auto Configuration**: Automatic configuration initialization on first run
 
 ## Installation
 
 **Docker Hub Image:** `bridgemill/optimarr:latest`
 
-### Using Docker Compose (Recommended)
+### Quick Start (Docker Compose)
 
-1. Clone or download this repository
-2. Edit `docker-compose.yml` to configure volumes for your setup
+1. Clone this repository
+2. Edit `docker-compose.yml` to configure volumes
 3. Start the container:
    ```bash
    docker-compose up -d
    ```
-4. Open your browser and navigate to `http://localhost:5000`
+4. Open `http://localhost:5000`
 
-The container automatically initializes `appsettings.json` in the config folder if it doesn't exist.
-
-### Using Docker Run
-
-Pull and run the pre-built image from Docker Hub:
+### Docker Run
 
 ```bash
 docker pull bridgemill/optimarr:latest
@@ -82,239 +45,25 @@ docker run -d \
   bridgemill/optimarr:latest
 ```
 
-### Building from Source
-
-1. Build the Docker image:
-   ```bash
-   docker build -t bridgemill/optimarr:latest .
-   ```
-
-2. Run the container using the same `docker run` command above, or use `docker-compose.yml`
-
-## Configuration
-
-### Servarr Integration
-
-Edit `appsettings.json` to configure Servarr integrations:
-
-```json
-{
-  "Servarr": {
-    "Sonarr": {
-      "BaseUrl": "http://localhost:8989",
-      "ApiKey": "your-sonarr-api-key",
-      "Enabled": true,
-      "BasicAuthUsername": "optional-username",
-      "BasicAuthPassword": "optional-password"
-    },
-    "Radarr": {
-      "BaseUrl": "http://localhost:7878",
-      "ApiKey": "your-radarr-api-key",
-      "Enabled": true,
-      "BasicAuthUsername": "optional-username",
-      "BasicAuthPassword": "optional-password"
-    }
-  }
-}
-```
-
-**Note:** Basic Auth credentials are optional. Only add them if your Sonarr/Radarr instance requires Basic Authentication. If Basic Auth is not required, you can omit these fields.
-
-### Tdarr Integration
-
-Optimarr supports webhook notifications from Tdarr to automatically rescan videos after transcoding. When Tdarr completes a successful transcode, it can notify Optimarr to update the video analysis with the new file properties.
-
-#### Configuration in Tdarr
-
-In Tdarr, configure a webhook notification with the following command:
-
-```bash
--vv -t "Success" -b "File {{{args.inputFileObj._id}}}" "http://your-optimarr-host:5000/api/library/webhook/tdarr"
-```
-
-**Command Breakdown:**
-- `-vv`: Verbose output
-- `-t "Success"`: Only trigger on successful transcodes
-- `-b "File {{{args.inputFileObj._id}}}"`: Body containing the file path/ID
-- `"http://your-optimarr-host:5000/api/library/webhook/tdarr"`: Optimarr webhook endpoint URL
-
-**Alternative Command Format:**
-
-If Tdarr sends the file path in a different format, Optimarr will automatically detect it from common fields:
-- `File`
-- `FilePath`
-- `InputFile`
-
-**Example Tdarr Webhook Configuration:**
-
-1. Go to Tdarr Settings → Notifications
-2. Add a new webhook notification
-3. Set the URL to: `http://your-optimarr-host:5000/api/library/webhook/tdarr`
-4. Configure the command as shown above
-5. Set the trigger condition to "On Success" or "On Complete"
-
-**How It Works:**
-
-1. Tdarr completes a successful transcode
-2. Tdarr sends a POST request to Optimarr's webhook endpoint with the file path
-3. Optimarr finds the video in its database by file path
-4. Optimarr automatically rescans the video to update:
-   - Video codec, container, and metadata
-   - Compatibility ratings and scores
-   - Client compatibility results
-   - Full analysis report
-
-**Note:** The webhook endpoint accepts POST requests with JSON payload. The file path must match exactly with the path stored in Optimarr's database.
-
-### Getting API Keys
-
-- **Sonarr**: Settings → General → Security → API Key
-- **Radarr**: Settings → General → Security → API Key
-- **Jellyfin**: Dashboard → API Keys
-
-## Usage
-
-### Web Interface
-
-1. Open the application in your browser
-2. Navigate to the "Analyze" tab
-3. Select a video file (MP4, MKV, AVI, TS, WebM, OGG)
-4. Optionally select a subtitle file (SRT, VTT, ASS, SSA, SUB)
-5. Click "Analyze Video"
-6. Review the detailed compatibility report
-
-### API Endpoints
-
-#### Analyze Video
-```
-POST /api/analysis/analyze
-Content-Type: application/json
-
-{
-  "videoPath": "C:\\Videos\\movie.mp4",
-  "subtitlePath": "C:\\Videos\\movie.srt" // optional
-}
-```
-
-#### Analyze Uploaded File
-```
-POST /api/analysis/analyze-file
-Content-Type: multipart/form-data
-
-videoFile: [file]
-subtitleFile: [file] // optional
-```
-
-#### Servarr Status
-```
-GET /api/servarr/status
-```
-
-#### Analyze Sonarr Series
-```
-POST /api/servarr/sonarr/analyze-series/{seriesId}
-```
-
-#### Analyze Radarr Movie
-```
-POST /api/servarr/radarr/analyze-movie/{movieId}
-```
-
-## Compatibility Matrix
-
-The application uses the latest Jellyfin compatibility data as of December 2025, including:
-
-- **Video Codecs**: H.264, H.265, VP9, AV1, MPEG-4
-- **Audio Codecs**: AAC, MP3, AC3, EAC3, DTS, FLAC, Opus, Vorbis, ALAC
-- **Containers**: MP4, MKV, WebM, TS, OGG, AVI
-- **Subtitle Formats**: SRT, VTT, ASS, SSA, VobSub, MP4TT, PGSSUB, EIA-608/708
-
-## Integration with Servarr Apps
-
-### Sonarr
-- Analyze TV series episodes for media optimization
-- Get episode file paths from Sonarr API
-- Queue analysis for entire series
-- Sync library paths from Sonarr root folders
-- Path mapping support for Docker environments
-
-### Radarr
-- Analyze movie files for media optimization
-- Get movie file paths from Radarr API
-- Batch analyze multiple movies
-- Sync library paths from Radarr root folders
-- Path mapping support for Docker environments
-
-### Jellyfin
-- Sync playback history to identify direct play vs transcode patterns
-- Match playback data with local library files
-- View client compatibility statistics
-
 ## Documentation
 
-This project follows the **B-MAD (Breakthrough Method for Agentic Development)** methodology for comprehensive documentation:
+- **[Product Requirement Document](docs/PRD.md)** - Product specifications and requirements
+- **[System Architecture](docs/ARCHITECTURE.md)** - Technical architecture and design
+- **[Developer Guide](docs/DEVELOPER_GUIDE.md)** - Development workflows and patterns
+- **[Changelog](docs/CHANGELOG.md)** - Version history
 
-- **[Product Requirement Document (PRD)](docs/PRD.md)** - Complete product specifications, requirements, and user stories
-- **[System Architecture Document](docs/ARCHITECTURE.md)** - Technical architecture, component design, and system interactions
-- **[Developer Guide](docs/DEVELOPER_GUIDE.md)** - Getting started, code patterns, and development workflows
+## Screenshots
 
-These documents provide context-rich information for developers, contributors, and stakeholders.
+![Dashboard View](/screenshot/Screenshot 2026-01-11 170142.png?raw=true "Dashboard View")
 
-## Database Migration
+![Library Management](/screenshot/Screenshot 2026-01-11 170212.png?raw=true "Library Management")
 
-If you're upgrading from a previous version and need to add Servarr integration fields to your existing database, you can:
-
-1. **Automatic (New Installations):** New databases will automatically include the Servarr fields.
-
-2. **Manual Migration (Existing Databases):** 
-   - Run the SQL script located at `Data/Migrations/AddServarrFields.sql` against your database
-   - Or delete your database file (`data/optimarr.db`) and let the application recreate it (⚠️ **WARNING:** This will delete all your data)
-
-3. **Using Entity Framework Migrations:**
-   ```bash
-   dotnet ef migrations add AddServarrFields
-   dotnet ef database update
-   ```
-
-## TODO / Roadmap
-
-### Planned Features
-- [ ] Automated quality profile recommendations based on compatibility
-- [ ] Batch video re-encoding suggestions
-- [ ] Integration with Plex for playback history
-- [ ] Export/Import compatibility reports
-- [ ] Scheduled library scans
-- [ ] Email notifications for scan completion
-- [ ] Advanced filtering and search options
-- [ ] Video comparison tool
-- [ ] API rate limiting and authentication
-- [ ] Multi-user support with roles
-
-### Known Issues / Improvements
-- [ ] Improve error handling for broken media files
-- [ ] Optimize large library scan performance
-- [ ] Add more comprehensive logging
-- [ ] Improve mobile responsiveness
-- [ ] Add unit tests
-
-## License
-
-This project is open source and available under the MIT License.
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
+![Media Analysis](/screenshot/Screenshot 2026-01-11 170237.png?raw=true "Media Analysis")
 
 ## Support
 
 For issues and questions, please open an issue on the project repository.
 
+---
 
-
-## Acknowledgments
-
-- Built with ASP.NET Core 8.0
-- Uses MediaInfo.NET for video metadata extraction
-- Inspired by the Servarr family of applications
-- Media optimization data based on official Jellyfin client documentation
-
+**License:** MIT License

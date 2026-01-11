@@ -1,5 +1,5 @@
 // Browse Media Functions
-import { escapeHtml } from './utils.js';
+import { escapeHtml, getRatingCategory, getTitleFromFileName } from './utils.js';
 import { showMediaInfo } from './media-info.js';
 
 export let browseCurrentPage = 1;
@@ -10,6 +10,12 @@ export async function loadBrowseMedia() {
     const container = document.getElementById('browseContainerFilter')?.value || '';
     const score = document.getElementById('browseScoreFilter')?.value || '';
     const servarrFilter = document.getElementById('browseServarrFilter')?.value || '';
+    const audioCodec = document.getElementById('browseAudioCodecFilter')?.value || '';
+    const audioChannel = document.getElementById('browseAudioChannelFilter')?.value || '';
+    const hdrSdr = document.getElementById('browseHdrSdrFilter')?.value || '';
+    const bitDepth = document.getElementById('browseBitDepthFilter')?.value || '';
+    const subtitleFormat = document.getElementById('browseSubtitleFormatFilter')?.value || '';
+    const bitrateRange = document.getElementById('browseBitrateRangeFilter')?.value || '';
     const search = document.getElementById('browseSearch')?.value || '';
     const sortBy = document.getElementById('browseSortBy')?.value || 'analyzedAt';
     const sortOrder = document.getElementById('browseSortOrder')?.value || 'desc';
@@ -30,6 +36,12 @@ export async function loadBrowseMedia() {
         if (container) params.append('container', container);
         if (score) params.append('score', score);
         if (servarrFilter) params.append('servarrFilter', servarrFilter);
+        if (audioCodec) params.append('audioCodec', audioCodec);
+        if (audioChannel) params.append('audioChannel', audioChannel);
+        if (hdrSdr) params.append('hdrSdr', hdrSdr);
+        if (bitDepth) params.append('bitDepth', bitDepth);
+        if (subtitleFormat) params.append('subtitleFormat', subtitleFormat);
+        if (bitrateRange) params.append('bitrateRange', bitrateRange);
         if (search) params.append('search', search);
         if (sortBy) params.append('sortBy', sortBy);
         if (sortOrder) params.append('sortOrder', sortOrder);
@@ -40,16 +52,22 @@ export async function loadBrowseMedia() {
         
         const result = await response.json();
         
-        if (!result.items || result.items.length === 0) {
+        // Check for empty results - handle both camelCase and PascalCase from backend
+        const items = result.items || result.Items || [];
+        const total = result.total !== undefined ? result.total : (result.Total !== undefined ? result.Total : 0);
+        
+        if (!items || items.length === 0 || total === 0) {
             if (grid) {
                 grid.innerHTML = '<div class="empty-state"><p>No media found. Try adjusting your filters.</p></div>';
             }
+            // Clear pagination when no results
+            updateBrowsePagination({ items: [], total: 0, totalPages: 0, page: 1 });
             return;
         }
         
         if (grid) {
-            grid.innerHTML = result.items.map(video => {
-                const rating = video.compatibilityRating ?? 0;
+            grid.innerHTML = items.map(video => {
+                const rating = video.compatibilityRating ?? 0; // Now 0-100 scale
                 
                 // Determine audio type (surround/stereo)
                 let audioType = 'Unknown';
@@ -60,14 +78,35 @@ export async function loadBrowseMedia() {
                         if (Array.isArray(audioTracks) && audioTracks.length > 0) {
                             // Get the first audio track for display
                             const firstTrack = audioTracks[0];
-                            audioCodec = firstTrack.codec || 'N/A';
+                            audioCodec = firstTrack.codec || firstTrack.Codec || 'N/A';
                             
                             // Determine if surround (channels > 2) or stereo (channels = 2)
-                            const maxChannels = Math.max(...audioTracks.map(t => t.channels || 2));
-                            if (maxChannels > 2) {
-                                audioType = 'Surround';
-                            } else if (maxChannels === 2) {
-                                audioType = 'Stereo';
+                            // Handle both camelCase and PascalCase property names
+                            const channelValues = audioTracks.map(t => {
+                                // Try camelCase first, then PascalCase
+                                const channels = t.channels !== undefined && t.channels !== null 
+                                    ? t.channels 
+                                    : (t.Channels !== undefined && t.Channels !== null ? t.Channels : null);
+                                return channels;
+                            }).filter(c => c !== null && c !== undefined && c > 0);
+                            
+                            if (channelValues.length === 0) {
+                                // No valid channel data, can't determine
+                                audioType = 'Unknown';
+                            } else {
+                                const maxChannels = Math.max(...channelValues);
+                                if (maxChannels > 2) {
+                                    audioType = 'Surround';
+                                } else if (maxChannels === 2) {
+                                    audioType = 'Stereo';
+                                } else if (maxChannels === 1) {
+                                    audioType = 'Mono';
+                                }
+                                
+                                // Debug logging if we detect surround but logic fails
+                                if (maxChannels > 2 && audioType !== 'Surround') {
+                                    console.warn('Audio type detection issue - maxChannels:', maxChannels, 'audioTracks:', audioTracks, 'channelValues:', channelValues);
+                                }
                             }
                         }
                     }
@@ -105,6 +144,9 @@ export async function loadBrowseMedia() {
                     ? '<span class="processing-badge" title="Video is being redownloaded, will be rescanned after 24 hours">⏳ Processing</span>' 
                     : '';
                 
+                // Determine rating category for color coding
+                const ratingCategory = getRatingCategory(rating);
+                
                 return `
                     <div class="media-card ${video.isBroken ? 'broken-media' : ''} ${video.processingStatus === 'Processing' ? 'processing-media' : ''}" data-video-id="${video.id}">
                         <div class="media-card-checkbox" onclick="event.stopPropagation();">
@@ -114,14 +156,14 @@ export async function loadBrowseMedia() {
                         <div class="media-card-header">
                             ${servarrIcons}
                             ${processingBadge}
-                            ${video.isBroken ? '<span class="broken-badge" title="Broken or unreadable media file">⚠️ Broken</span>' : `<span class="rating-badge rating-${rating}">${rating}/11</span>`}
+                            ${video.isBroken ? '<span class="broken-badge" title="Broken or unreadable media file">⚠️ Broken</span>' : `<span class="rating-badge rating-${ratingCategory}">${rating}/100</span>`}
                             ${video.isHDR ? '<span class="hdr-badge">HDR</span>' : '<span class="sdr-badge">SDR</span>'}
                             ${audioType !== 'Unknown' ? `<span class="audio-badge audio-${audioType.toLowerCase()}">${audioType}</span>` : ''}
                             ${qualityTag ? `<span class="quality-badge">${qualityTag}</span>` : ''}
                         </div>
                         <div class="media-card-body">
                             <div class="media-card-title" title="${escapeHtml(video.fileName || 'Unknown')}">
-                                ${escapeHtml(video.fileName || 'Unknown')}
+                                ${escapeHtml(getTitleFromFileName(video.fileName))}
                             </div>
                             <div class="media-card-info">
                                 <div class="info-row">
@@ -144,7 +186,7 @@ export async function loadBrowseMedia() {
             }).join('');
         }
         
-        // Update pagination
+        // Update pagination with the result data
         updateBrowsePagination(result);
         
         // Load library filter options if not already loaded
@@ -174,18 +216,28 @@ export function updateBrowsePagination(result) {
     const pagination = document.getElementById('browsePagination');
     if (!pagination) return;
     
-    if (result.totalPages <= 1) {
+    // Handle both camelCase and PascalCase from backend JSON serialization
+    const items = result.items || result.Items || [];
+    const total = result.total !== undefined ? result.total : (result.Total !== undefined ? result.Total : 0);
+    const totalPages = result.totalPages !== undefined ? result.totalPages : (result.TotalPages !== undefined ? result.TotalPages : 0);
+    const currentPage = result.page !== undefined ? result.page : (result.Page !== undefined ? result.Page : 1);
+    
+    // Hide pagination if no results, invalid result, or only one page
+    if (!result || 
+        items.length === 0 || 
+        total === 0 ||
+        totalPages <= 1) {
         pagination.innerHTML = '';
         return;
     }
     
     let html = '';
-    if (result.page > 1) {
-        html += `<button class="btn btn-secondary" onclick="window.setBrowsePage(${result.page - 1}); window.loadBrowseMedia();">Previous</button>`;
+    if (currentPage > 1) {
+        html += `<button class="btn btn-secondary" onclick="window.setBrowsePage(${currentPage - 1}); window.loadBrowseMedia();">Previous</button>`;
     }
-    html += `<span>Page ${result.page} of ${result.totalPages}</span>`;
-    if (result.page < result.totalPages) {
-        html += `<button class="btn btn-secondary" onclick="window.setBrowsePage(${result.page + 1}); window.loadBrowseMedia();">Next</button>`;
+    html += `<span>Page ${currentPage} of ${totalPages}</span>`;
+    if (currentPage < totalPages) {
+        html += `<button class="btn btn-secondary" onclick="window.setBrowsePage(${currentPage + 1}); window.loadBrowseMedia();">Next</button>`;
     }
     pagination.innerHTML = html;
 }
@@ -250,6 +302,40 @@ export async function loadBrowseFilterOptions() {
                 option.value = container;
                 option.textContent = container;
                 containerSelect.appendChild(option);
+            });
+        }
+
+        // Populate audio codec filter
+        const audioCodecSelect = document.getElementById('browseAudioCodecFilter');
+        if (audioCodecSelect && filters.audioCodecs) {
+            const allAudioCodecsOption = audioCodecSelect.querySelector('option[value=""]');
+            audioCodecSelect.innerHTML = '';
+            if (allAudioCodecsOption) {
+                audioCodecSelect.appendChild(allAudioCodecsOption);
+            }
+            
+            filters.audioCodecs.forEach(codec => {
+                const option = document.createElement('option');
+                option.value = codec;
+                option.textContent = codec;
+                audioCodecSelect.appendChild(option);
+            });
+        }
+
+        // Populate subtitle format filter
+        const subtitleFormatSelect = document.getElementById('browseSubtitleFormatFilter');
+        if (subtitleFormatSelect && filters.subtitleFormats) {
+            const allSubtitleFormatsOption = subtitleFormatSelect.querySelector('option[value=""]');
+            subtitleFormatSelect.innerHTML = '';
+            if (allSubtitleFormatsOption) {
+                subtitleFormatSelect.appendChild(allSubtitleFormatsOption);
+            }
+            
+            filters.subtitleFormats.forEach(format => {
+                const option = document.createElement('option');
+                option.value = format;
+                option.textContent = format;
+                subtitleFormatSelect.appendChild(option);
             });
         }
     } catch (error) {

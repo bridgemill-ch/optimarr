@@ -2,7 +2,7 @@
 import { loadKnownLibraries, loadProcessingVideos } from './library.js';
 import { loadBrowseFilterOptions, loadBrowseMedia, setupBrowseEventListeners } from './browse.js';
 import { loadPlaybackHistory, loadPlaybackFilterOptions, setupPlaybackEventListeners, loadPlaybackDashboard } from './playback.js';
-import { loadRatingSettings, loadCompatibilitySettings, loadClientSettings, loadJellyfinSettings, loadSonarrSettings, loadRadarrSettings, loadSonarrPathMappings, loadRadarrPathMappings } from './settings.js';
+import { loadJellyfinSettings, loadSonarrSettings, loadRadarrSettings, loadSonarrPathMappings, loadRadarrPathMappings, loadMediaPropertySettings } from './settings.js';
 import { loadDashboard } from './dashboard.js';
 import { loadServarrStatus } from './servarr.js';
 
@@ -87,9 +87,7 @@ export function initNavigation() {
                 loadPlaybackHistory();
                 setupPlaybackEventListeners();
             } else if (targetTab === 'settings') {
-                loadRatingSettings();
-                loadClientSettings();
-                loadCompatibilitySettings();
+                loadMediaPropertySettings();
                 loadJellyfinSettings();
                 loadSonarrSettings();
                 loadRadarrSettings();
@@ -102,7 +100,7 @@ export function initNavigation() {
         }
         
         // Close mobile menu after navigation
-        if (window.innerWidth <= 640 && sidebar && mobileOverlay && mobileMenuToggle) {
+        if (window.innerWidth <= 768 && sidebar && mobileOverlay && mobileMenuToggle) {
             sidebar.classList.remove('open');
             mobileOverlay.classList.remove('active');
             mobileMenuToggle.classList.remove('active');

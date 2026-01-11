@@ -853,7 +853,17 @@ namespace Optimarr.Services
                 yield break;
             }
 
-            _logger?.LogInformation("Using alternative method: fetching recently played items for {UserCount} users", users.Count);
+            // Check if PlaybackReporting plugin is available
+            bool playbackReportingAvailable = await CheckPlaybackReportingAvailableAsync();
+
+            if (playbackReportingAvailable)
+            {
+                _logger?.LogInformation("Using alternative method: fetching recently played items for {UserCount} users. PlaybackReporting plugin: available - will fetch client/device/play method details", users.Count);
+            }
+            else
+            {
+                _logger?.LogWarning("Using alternative method: fetching recently played items for {UserCount} users. PlaybackReporting plugin: not available - client/device/play method information will not be available. To get this information, install the PlaybackReporting plugin in Jellyfin.", users.Count);
+            }
 
             foreach (var user in users)
             {
@@ -862,7 +872,7 @@ namespace Optimarr.Services
                 if (startDate.HasValue)
                 {
                     var startDateStr = startDate.Value.ToString("yyyy-MM-ddTHH:mm:ssZ");
-                    url += $"&MinDate={startDateStr}";
+                    url += $"&MinDateLastPlayed={startDateStr}";
                 }
                 
                 _logger?.LogInformation("Fetching recently played items for user {UserName}: {Url}", user.Name, url);
@@ -900,10 +910,15 @@ namespace Optimarr.Services
                     {
                         _logger?.LogInformation("Found {Count} items for user {UserName}", itemsResponse.Items.Count, user.Name);
                         
+                        var itemsWithPlayback = 0;
+                        var itemsWithPath = 0;
+                        var itemsYielded = 0;
+                        
                         foreach (var item in itemsResponse.Items)
                         {
                             if (item.UserData != null && item.UserData.LastPlayedDate.HasValue)
                             {
+                                itemsWithPlayback++;
                                 var playedDate = item.UserData.LastPlayedDate.Value;
                                 
                                 // Apply date filters
@@ -917,8 +932,44 @@ namespace Optimarr.Services
                                     itemPath = item.MediaSources[0].Path;
                                 }
                                 
+                                // If still no path, try fetching item details individually (for episodes)
+                                if (string.IsNullOrEmpty(itemPath) && !string.IsNullOrEmpty(item.Id))
+                                {
+                                    try
+                                    {
+                                        var detailedItem = await GetItemAsync(item.Id);
+                                        if (detailedItem != null)
+                                        {
+                                            itemPath = detailedItem.Path;
+                                            if (string.IsNullOrEmpty(itemPath) && detailedItem.MediaSources != null && detailedItem.MediaSources.Count > 0)
+                                            {
+                                                itemPath = detailedItem.MediaSources[0].Path;
+                                            }
+                                        }
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        _logger?.LogWarning(ex, "Error fetching detailed item info for {ItemId} ({ItemName})", item.Id, item.Name);
+                                    }
+                                }
+                                
                                 if (!string.IsNullOrEmpty(itemPath))
                                 {
+                                    itemsWithPath++;
+                                    
+                                    // Try to get playback details from PlaybackReporting plugin (only if available)
+                                    PlaybackDetails? playbackDetails = null;
+                                    if (playbackReportingAvailable && !string.IsNullOrEmpty(item.Id) && !string.IsNullOrEmpty(user.Id))
+                                    {
+                                        playbackDetails = await GetPlaybackDetailsFromPluginAsync(user.Id, item.Id, playedDate);
+                                    }
+                                    
+                                    var playMethod = playbackDetails?.PlayMethod ?? "Unknown";
+                                    var isDirectPlay = playMethod.Equals("DirectPlay", StringComparison.OrdinalIgnoreCase);
+                                    var isDirectStream = playMethod.Equals("DirectStream", StringComparison.OrdinalIgnoreCase);
+                                    var isTranscode = playMethod.Equals("Transcode", StringComparison.OrdinalIgnoreCase);
+                                    
+                                    itemsYielded++;
                                     yield return new PlaybackHistoryItem
                                     {
                                         ItemId = item.Id,
@@ -930,17 +981,27 @@ namespace Optimarr.Services
                                         Path = itemPath,
                                         PlaybackStartTime = playedDate,
                                         PlaybackStopTime = null,
-                                        ClientName = null,
-                                        DeviceName = null,
-                                        PlayMethod = "Unknown",
-                                        IsDirectPlay = false,
-                                        IsDirectStream = false,
-                                        IsTranscode = false,
+                                        ClientName = playbackDetails?.ClientName,
+                                        DeviceName = playbackDetails?.DeviceName,
+                                        PlayMethod = playMethod,
+                                        IsDirectPlay = isDirectPlay,
+                                        IsDirectStream = isDirectStream,
+                                        IsTranscode = isTranscode,
                                         TranscodeReason = null
                                     };
                                 }
+                                else
+                                {
+                                    _logger?.LogWarning("Item {ItemId} ({ItemName}, Type: {ItemType}) has no path after all attempts. UserData present: {HasUserData}, MediaSources count: {MediaSourcesCount}", 
+                                        item.Id, item.Name, item.Type, item.UserData != null, item.MediaSources?.Count ?? 0);
+                                }
                             }
                         }
+                        
+                        var itemsWithClientInfo = playbackReportingAvailable ? itemsYielded : 0;
+                        _logger?.LogInformation("User {UserName}: {Total} items, {WithPlayback} with playback data, {WithPath} with paths, {Yielded} yielded{ClientInfo}", 
+                            user.Name, itemsResponse.Items.Count, itemsWithPlayback, itemsWithPath, itemsYielded,
+                            playbackReportingAvailable ? $", {itemsWithClientInfo} with client/device info" : " (no client/device info - PlaybackReporting plugin not available)");
                     }
                 }
                 else
@@ -983,18 +1044,28 @@ namespace Optimarr.Services
                     return history;
                 }
 
-                _logger?.LogInformation("Using alternative method: fetching recently played items for {UserCount} users", users.Count);
+                // Check if PlaybackReporting plugin is available
+                bool playbackReportingAvailable = await CheckPlaybackReportingAvailableAsync();
+
+                if (playbackReportingAvailable)
+                {
+                    _logger?.LogInformation("Using alternative method: fetching recently played items for {UserCount} users. PlaybackReporting plugin: available - will fetch client/device/play method details", users.Count);
+                }
+                else
+                {
+                    _logger?.LogWarning("Using alternative method: fetching recently played items for {UserCount} users. PlaybackReporting plugin: not available - client/device/play method information will not be available. To get this information, install the PlaybackReporting plugin in Jellyfin.", users.Count);
+                }
 
                 foreach (var user in users)
                 {
                     try
                     {
                         // Get user's recently played items
-                        var url = $"/Users/{user.Id}/Items?Recursive=true&IncludeItemTypes=Movie,Episode&SortBy=DatePlayed&SortOrder=Descending&Limit=1000&Fields=Path,MediaSources";
+                        var url = $"/Users/{user.Id}/Items?Recursive=true&IncludeItemTypes=Movie,Episode&SortBy=DatePlayed&SortOrder=Descending&Limit=1000&Fields=Path,MediaSources,UserData";
                         if (startDate.HasValue)
                         {
                             var startDateStr = startDate.Value.ToString("yyyy-MM-ddTHH:mm:ssZ");
-                            url += $"&MinDate={startDateStr}";
+                            url += $"&MinDateLastPlayed={startDateStr}";
                         }
                         
                         _logger?.LogInformation("Fetching recently played items for user {UserName}: {Url}", user.Name, url);
@@ -1012,10 +1083,15 @@ namespace Optimarr.Services
                             {
                                 _logger?.LogInformation("Found {Count} items for user {UserName}", itemsResponse.Items.Count, user.Name);
                                 
+                                var itemsWithPlayback = 0;
+                                var itemsWithPath = 0;
+                                var itemsAdded = 0;
+                                
                                 foreach (var item in itemsResponse.Items)
                                 {
                                     if (item.UserData != null && item.UserData.LastPlayedDate.HasValue)
                                     {
+                                        itemsWithPlayback++;
                                         var playedDate = item.UserData.LastPlayedDate.Value;
                                         
                                         // Apply date filters
@@ -1029,8 +1105,44 @@ namespace Optimarr.Services
                                             itemPath = item.MediaSources[0].Path;
                                         }
                                         
+                                        // If still no path, try fetching item details individually (for episodes)
+                                        if (string.IsNullOrEmpty(itemPath) && !string.IsNullOrEmpty(item.Id))
+                                        {
+                                            try
+                                            {
+                                                var detailedItem = await GetItemAsync(item.Id);
+                                                if (detailedItem != null)
+                                                {
+                                                    itemPath = detailedItem.Path;
+                                                    if (string.IsNullOrEmpty(itemPath) && detailedItem.MediaSources != null && detailedItem.MediaSources.Count > 0)
+                                                    {
+                                                        itemPath = detailedItem.MediaSources[0].Path;
+                                                    }
+                                                }
+                                            }
+                                            catch (Exception ex)
+                                            {
+                                                _logger?.LogWarning(ex, "Error fetching detailed item info for {ItemId} ({ItemName})", item.Id, item.Name);
+                                            }
+                                        }
+                                        
                                         if (!string.IsNullOrEmpty(itemPath))
                                         {
+                                            itemsWithPath++;
+                                            
+                                            // Try to get playback details from PlaybackReporting plugin (only if available)
+                                            PlaybackDetails? playbackDetails = null;
+                                            if (playbackReportingAvailable && !string.IsNullOrEmpty(item.Id) && !string.IsNullOrEmpty(user.Id))
+                                            {
+                                                playbackDetails = await GetPlaybackDetailsFromPluginAsync(user.Id, item.Id, playedDate);
+                                            }
+                                            
+                                            var playMethod = playbackDetails?.PlayMethod ?? "Unknown";
+                                            var isDirectPlay = playMethod.Equals("DirectPlay", StringComparison.OrdinalIgnoreCase);
+                                            var isDirectStream = playMethod.Equals("DirectStream", StringComparison.OrdinalIgnoreCase);
+                                            var isTranscode = playMethod.Equals("Transcode", StringComparison.OrdinalIgnoreCase);
+                                            
+                                            itemsAdded++;
                                             history.Add(new PlaybackHistoryItem
                                             {
                                                 ItemId = item.Id,
@@ -1042,17 +1154,27 @@ namespace Optimarr.Services
                                                 Path = itemPath,
                                                 PlaybackStartTime = playedDate,
                                                 PlaybackStopTime = null,
-                                                ClientName = null,
-                                                DeviceName = null,
-                                                PlayMethod = "Unknown",
-                                                IsDirectPlay = false,
-                                                IsDirectStream = false,
-                                                IsTranscode = false,
+                                                ClientName = playbackDetails?.ClientName,
+                                                DeviceName = playbackDetails?.DeviceName,
+                                                PlayMethod = playMethod,
+                                                IsDirectPlay = isDirectPlay,
+                                                IsDirectStream = isDirectStream,
+                                                IsTranscode = isTranscode,
                                                 TranscodeReason = null
                                             });
                                         }
+                                        else
+                                        {
+                                            _logger?.LogWarning("Item {ItemId} ({ItemName}, Type: {ItemType}) has no path after all attempts. UserData present: {HasUserData}, MediaSources count: {MediaSourcesCount}", 
+                                                item.Id, item.Name, item.Type, item.UserData != null, item.MediaSources?.Count ?? 0);
+                                        }
                                     }
                                 }
+                                
+                                var itemsWithClientInfo = playbackReportingAvailable ? itemsAdded : 0;
+                                _logger?.LogInformation("User {UserName}: {Total} items, {WithPlayback} with playback data, {WithPath} with paths, {Added} added to history{ClientInfo}", 
+                                    user.Name, itemsResponse.Items.Count, itemsWithPlayback, itemsWithPath, itemsAdded,
+                                    playbackReportingAvailable ? $", {itemsWithClientInfo} with client/device info" : " (no client/device info - PlaybackReporting plugin not available)");
                             }
                         }
                         else
@@ -1094,6 +1216,77 @@ namespace Optimarr.Services
             catch (Exception ex)
             {
                 _logger?.LogError(ex, "Error fetching item {ItemId}", itemId);
+            }
+
+            return null;
+        }
+
+        private async Task<bool> CheckPlaybackReportingAvailableAsync()
+        {
+            try
+            {
+                // Try a simple query to check if the plugin endpoint exists
+                var testQuery = new
+                {
+                    CustomQueryString = "SELECT 1 LIMIT 1",
+                    ReplaceUserId = false
+                };
+
+                var content = new StringContent(JsonSerializer.Serialize(testQuery), 
+                    System.Text.Encoding.UTF8, "application/json");
+                
+                var response = await _httpClient.PostAsync("/user_usage_stats/submit_custom_query", content);
+                return response.IsSuccessStatusCode;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private async Task<PlaybackDetails?> GetPlaybackDetailsFromPluginAsync(string userId, string itemId, DateTime playedDate)
+        {
+            try
+            {
+                // Try to get playback details from PlaybackReporting plugin
+                // This requires the plugin to be installed
+                // The PlaybackActivity table structure: DatePlayed, UserId, ItemId, Type, ItemName, PlaybackMethod, ClientName, DeviceName, Duration
+                var dateStr = playedDate.ToString("yyyy-MM-dd");
+                var query = new
+                {
+                    CustomQueryString = $"SELECT DatePlayed, UserId, ItemId, Type, ItemName, PlaybackMethod, ClientName, DeviceName, Duration FROM PlaybackActivity WHERE UserId = '{userId}' AND ItemId = '{itemId}' AND DatePlayed >= '{dateStr}' ORDER BY DatePlayed DESC LIMIT 1",
+                    ReplaceUserId = false
+                };
+
+                var content = new StringContent(JsonSerializer.Serialize(query), 
+                    System.Text.Encoding.UTF8, "application/json");
+                
+                var response = await _httpClient.PostAsync("/user_usage_stats/submit_custom_query", content);
+                if (response.IsSuccessStatusCode)
+                {
+                    var json = await response.Content.ReadAsStringAsync();
+                    var queryResult = JsonSerializer.Deserialize<PlaybackReportingQueryResult>(json, new JsonSerializerOptions 
+                    { 
+                        PropertyNameCaseInsensitive = true 
+                    });
+                    
+                    // Results come as arrays: [DatePlayed, UserId, ItemId, Type, ItemName, PlaybackMethod, ClientName, DeviceName, Duration]
+                    if (queryResult?.Results != null && queryResult.Results.Count > 0 && queryResult.Results[0].Count >= 6)
+                    {
+                        var result = queryResult.Results[0];
+                        return new PlaybackDetails
+                        {
+                            ClientName = result.Count > 6 ? result[6]?.ToString() : null,
+                            DeviceName = result.Count > 7 ? result[7]?.ToString() : null,
+                            PlayMethod = result.Count > 5 ? result[5]?.ToString() : null
+                        };
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                // Plugin might not be available, this is expected
+                _logger?.LogDebug(ex, "PlaybackReporting plugin query failed for item {ItemId}: {Error}", itemId, ex.Message);
             }
 
             return null;
@@ -1190,6 +1383,19 @@ namespace Optimarr.Services
         {
             [JsonPropertyName("Items")]
             public List<JellyfinItem>? Items { get; set; }
+        }
+
+        private class PlaybackDetails
+        {
+            public string? ClientName { get; set; }
+            public string? DeviceName { get; set; }
+            public string? PlayMethod { get; set; }
+        }
+
+        private class PlaybackReportingQueryResult
+        {
+            [JsonPropertyName("results")]
+            public List<List<object?>>? Results { get; set; }
         }
     }
 

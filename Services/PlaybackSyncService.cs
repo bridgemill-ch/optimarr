@@ -71,26 +71,36 @@ namespace Optimarr.Services
                     ? lastSyncTime.AddMinutes(-5) // 5 minute overlap to catch any missed items
                     : DateTime.UtcNow.AddDays(-7);
 
-                var historyItems = await jellyfinService.GetPlaybackHistoryAsync(startDate, DateTime.UtcNow);
-
-                _logger.LogInformation("Retrieved {Count} playback history items from Jellyfin", historyItems.Count);
-
                 var syncedCount = 0;
                 var matchedCount = 0;
+                var skippedCount = 0;
+                const int batchSize = 50; // Save in batches to balance performance and progress visibility
+                var batch = new List<Models.PlaybackHistory>();
 
-                foreach (var item in historyItems)
+                _logger.LogInformation("Starting streaming playback history sync from {StartDate}", startDate);
+
+                // Process items as they arrive (streaming)
+                await foreach (var item in jellyfinService.GetPlaybackHistoryStreamAsync(startDate, DateTime.UtcNow))
                 {
                     if (cancellationToken.IsCancellationRequested) break;
-                    if (string.IsNullOrEmpty(item.Path)) continue;
+                    if (string.IsNullOrEmpty(item.Path))
+                    {
+                        skippedCount++;
+                        continue;
+                    }
 
-                    // Check if already exists
+                    // Check if already exists (duplicate check)
                     var existing = await dbContext.PlaybackHistories
                         .FirstOrDefaultAsync(p => 
                             p.JellyfinItemId == item.ItemId && 
                             p.PlaybackStartTime == item.PlaybackStartTime &&
                             p.JellyfinUserId == item.UserId, cancellationToken);
 
-                    if (existing != null) continue;
+                    if (existing != null)
+                    {
+                        skippedCount++;
+                        continue;
+                    }
 
                     var playback = new Models.PlaybackHistory
                     {
@@ -119,21 +129,36 @@ namespace Optimarr.Services
                     // Try to match with local library
                     await MatchPlaybackWithLibrary(playback, dbContext, cancellationToken);
 
-                    dbContext.PlaybackHistories.Add(playback);
+                    batch.Add(playback);
                     syncedCount++;
                     
                     if (playback.VideoAnalysisId != null || playback.LibraryPathId != null)
                     {
                         matchedCount++;
                     }
+
+                    // Save batch when it reaches the batch size
+                    if (batch.Count >= batchSize)
+                    {
+                        dbContext.PlaybackHistories.AddRange(batch);
+                        await dbContext.SaveChangesAsync(cancellationToken);
+                        _logger.LogDebug("Saved batch of {Count} playback records (total synced: {Total})", batch.Count, syncedCount);
+                        batch.Clear();
+                    }
                 }
 
-                await dbContext.SaveChangesAsync(cancellationToken);
-
-                if (syncedCount > 0)
+                // Save any remaining items in the batch
+                if (batch.Count > 0)
                 {
-                    _logger.LogInformation("Auto-synced {SyncedCount} playback records, matched {MatchedCount} with local libraries", 
-                        syncedCount, matchedCount);
+                    dbContext.PlaybackHistories.AddRange(batch);
+                    await dbContext.SaveChangesAsync(cancellationToken);
+                    _logger.LogDebug("Saved final batch of {Count} playback records", batch.Count);
+                }
+
+                if (syncedCount > 0 || skippedCount > 0)
+                {
+                    _logger.LogInformation("Auto-synced {SyncedCount} playback records, matched {MatchedCount} with local libraries, skipped {SkippedCount} (duplicates or invalid)", 
+                        syncedCount, matchedCount, skippedCount);
                 }
             }
             catch (Exception ex)
@@ -150,12 +175,22 @@ namespace Optimarr.Services
             var normalizedPlaybackPath = NormalizePath(playback.FilePath);
 
             // Try to match with VideoAnalysis by file path
-            var videoAnalysis = await dbContext.VideoAnalyses
-                .FirstOrDefaultAsync(v => NormalizePath(v.FilePath) == normalizedPlaybackPath, cancellationToken);
+            // Load video analyses into memory to avoid LINQ translation issues with NormalizePath
+            var allVideoAnalyses = await dbContext.VideoAnalyses
+                .Select(v => new { v.Id, v.FilePath })
+                .ToListAsync(cancellationToken);
 
-            if (videoAnalysis != null)
+            foreach (var video in allVideoAnalyses)
             {
-                playback.VideoAnalysisId = videoAnalysis.Id;
+                if (!string.IsNullOrEmpty(video.FilePath))
+                {
+                    var normalizedVideoPath = NormalizePath(video.FilePath);
+                    if (normalizedVideoPath == normalizedPlaybackPath)
+                    {
+                        playback.VideoAnalysisId = video.Id;
+                        break;
+                    }
+                }
             }
 
             // Try to match with LibraryPath

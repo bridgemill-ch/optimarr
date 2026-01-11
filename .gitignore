@@ -200,3 +200,4 @@ FodyWeavers.xsd
 
 docker-compose.dev.yml
 .cursor
+Dockerfile.dev

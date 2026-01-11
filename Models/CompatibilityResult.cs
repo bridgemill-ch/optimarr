@@ -5,8 +5,8 @@ namespace Optimarr.Models
     public class CompatibilityResult
     {
         public string OverallScore { get; set; } = "Unknown"; // Optimal, Good, Poor
-        public int CompatibilityRating { get; set; } = 0; // 0-11 rating scale (count of Direct Play clients)
-        public Dictionary<string, ClientCompatibility> ClientResults { get; set; } = new();
+        public int CompatibilityRating { get; set; } = 0; // 0-100 rating scale (based on media properties)
+        public Dictionary<string, ClientCompatibility> ClientResults { get; set; } = new(); // Deprecated - kept for backward compatibility
         public List<string> Issues { get; set; } = new();
         public List<string> Recommendations { get; set; } = new();
     }

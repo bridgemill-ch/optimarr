@@ -1,6 +1,5 @@
 // Dashboard Functions
 import { escapeHtml, formatFileSize } from './utils.js';
-import { loadJellyfinClients } from './servarr.js';
 import { showMediaInfo } from './media-info.js';
 
 export async function loadDashboard() {
@@ -8,7 +7,7 @@ export async function loadDashboard() {
         console.log('Loading dashboard...');
         
         // Show loading state
-        const statElements = ['totalVideos', 'optimalCount', 'goodCount', 'poorCount', 'totalSize', 'hdrCount'];
+        const statElements = ['totalVideos', 'optimalCount', 'goodCount', 'poorCount', 'totalSize', 'hdrCount', 'sdrCount'];
         statElements.forEach(id => {
             const el = document.getElementById(id);
             if (el) el.textContent = '...';
@@ -48,23 +47,26 @@ export async function loadDashboard() {
         const hdrCountEl = document.getElementById('hdrCount');
         if (hdrCountEl) hdrCountEl.textContent = (stats.hdrCount || 0).toLocaleString();
         
+        const sdrCountEl = document.getElementById('sdrCount');
+        if (sdrCountEl) sdrCountEl.textContent = (stats.sdrCount || 0).toLocaleString();
+        
         // Update charts
         updateCompatibilityChart(stats);
         updateCodecChart(stats.codecDistribution || {});
         updateContainerChart(stats.containerDistribution || {});
-        
-        // Load client compatibility
-        loadClientCompatibility();
-        
-        // Load Jellyfin clients
-        loadJellyfinClients();
+        updateAudioCodecChart(stats.audioCodecDistribution || {});
+        updateAudioChannelChart(stats.audioChannelDistribution || {});
+        updateHdrSdrChart(stats.hdrCount || 0, stats.sdrCount || 0);
+        updateBitDepthChart(stats.bitDepthDistribution || {});
+        updateSubtitleFormatChart(stats.subtitleFormatDistribution || {});
+        updateBitrateRangeChart(stats.bitrateRangeDistribution || {});
         
         console.log('Dashboard refreshed successfully');
     } catch (error) {
         console.error('Error loading dashboard:', error);
         
         // Show error state
-        const statElements = ['totalVideos', 'optimalCount', 'goodCount', 'poorCount', 'totalSize', 'hdrCount'];
+        const statElements = ['totalVideos', 'optimalCount', 'goodCount', 'poorCount', 'totalSize', 'hdrCount', 'sdrCount'];
         statElements.forEach(id => {
             const el = document.getElementById(id);
             if (el) el.textContent = error.name === 'AbortError' ? 'Timeout' : 'Error';
@@ -248,14 +250,6 @@ export async function loadTopIssues() {
                         <div class="summary-value warning">${summary.videosNeedingOptimization?.toLocaleString() || 0}</div>
                         <div class="summary-percent">${summary.optimizationPotential || 0}%</div>
                     </div>
-                    <div class="summary-item">
-                        <div class="summary-label">Avg Direct Play</div>
-                        <div class="summary-value">${summary.avgDirectPlayClients || 0}/11</div>
-                    </div>
-                    <div class="summary-item">
-                        <div class="summary-label">Videos Requiring Transcode</div>
-                        <div class="summary-value">${summary.videosWithTranscoding?.toLocaleString() || 0}</div>
-                    </div>
                 </div>
             `;
         }
@@ -271,7 +265,7 @@ export async function loadTopIssues() {
         
         container.innerHTML = issues.map((issue, index) => `
             <div class="issue-item clickable-issue-item" onclick="showMediaInfo(${issue.id || 0})" title="Click to view media information">
-                <span class="issue-count">${issue.transcodeClients || 0}</span>
+                <span class="issue-count">${issue.compatibilityRating !== undefined ? issue.compatibilityRating : 'N/A'}</span>
                 <span class="issue-text">${escapeHtml(issue.fileName || 'Unknown')} - ${escapeHtml(issue.videoCodec || 'NULL')} / ${escapeHtml(issue.container || 'NULL')}</span>
             </div>
         `).join('');
@@ -280,67 +274,6 @@ export async function loadTopIssues() {
         const container = document.getElementById('topIssuesList');
         if (container) {
             container.innerHTML = '<div class="error-state">Error loading issues</div>';
-        }
-    }
-}
-
-export async function loadClientCompatibility() {
-    try {
-        const response = await fetch('/api/library/dashboard/client-compatibility');
-        if (!response.ok) throw new Error('Failed to load client compatibility');
-        
-        const data = await response.json();
-        const clients = data.clients || {};
-        const container = document.getElementById('clientCompatibilityList');
-        if (!container) return;
-        
-        if (Object.keys(clients).length === 0) {
-            container.innerHTML = '<div class="empty-state"><p>No client compatibility data available. Ensure Jellyfin clients are configured and videos are analyzed.</p></div>';
-            return;
-        }
-        
-        // Sort clients by compatibility percentage (descending)
-        const sortedClients = Object.entries(clients).sort((a, b) => 
-            (b[1].compatibilityPercent || 0) - (a[1].compatibilityPercent || 0)
-        );
-        
-        container.innerHTML = sortedClients.map(([clientName, stats]) => {
-            const percent = stats.compatibilityPercent || 0;
-            const level = stats.compatibilityLevel || 'Unknown';
-            const levelClass = level.toLowerCase().replace(' ', '-');
-            
-            return `
-                <div class="client-compat-item">
-                    <div class="client-compat-header">
-                        <div class="client-name">${escapeHtml(clientName)}</div>
-                        <div class="client-level ${levelClass}">${escapeHtml(level)}</div>
-                    </div>
-                    <div class="client-compat-stats">
-                        <div class="compat-stat">
-                            <span class="stat-label">Direct Play:</span>
-                            <span class="stat-value success">${stats.directPlayCount || 0}</span>
-                        </div>
-                        <div class="compat-stat">
-                            <span class="stat-label">Remux:</span>
-                            <span class="stat-value warning">${stats.remuxCount || 0}</span>
-                        </div>
-                        <div class="compat-stat">
-                            <span class="stat-label">Transcode:</span>
-                            <span class="stat-value error">${stats.transcodeCount || 0}</span>
-                        </div>
-                    </div>
-                    <div class="client-compat-bar">
-                        <div class="compat-bar-fill" style="width: ${percent}%; background-color: ${getCompatibilityColor(percent)};"></div>
-                        <span class="compat-percent">${percent}%</span>
-                    </div>
-                </div>
-            `;
-        }).join('');
-    } catch (error) {
-        console.error('Error loading client compatibility:', error);
-        const container = document.getElementById('clientCompatibilityList');
-        if (container) {
-            container.innerHTML = '<div class="error-state">Error loading client compatibility</div>';
         }
     }
 }
@@ -454,6 +387,217 @@ export async function navigateToBrowseWithBroken() {
     }
 }
 
+export function updateAudioCodecChart(distribution) {
+    const chart = document.getElementById('audioCodecChart');
+    if (!distribution || Object.keys(distribution).length === 0) {
+        chart.innerHTML = '<div class="empty-state"><p>No audio codec data available. Videos may not be analyzed yet.</p></div>';
+        return;
+    }
+    
+    const validEntries = Object.entries(distribution)
+        .filter(([codec]) => codec && codec.trim() !== '' && codec.trim().toUpperCase() !== 'NULL')
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 5);
+    
+    if (validEntries.length === 0) {
+        chart.innerHTML = '<div class="empty-state"><p>No audio codec data available. Videos may not be analyzed yet.</p></div>';
+        return;
+    }
+    
+    const max = Math.max(...validEntries.map(e => e[1]));
+    chart.innerHTML = validEntries.map(([codec, count]) => {
+        const pct = ((count / max) * 100).toFixed(0);
+        const jsEscapedCodec = codec.replace(/'/g, "\\'").replace(/\\/g, "\\\\");
+        return `
+            <div class="chart-item clickable-chart-item" onclick="navigateToBrowseWithAudioCodec('${jsEscapedCodec}')" title="Click to view ${escapeHtml(codec)} audio codec videos">
+                <div class="chart-label">${escapeHtml(codec)}</div>
+                <div class="chart-bar-container">
+                    <div class="chart-bar-fill" style="width: ${pct}%"></div>
+                    <span class="chart-value">${count}</span>
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+export function updateAudioChannelChart(distribution) {
+    const chart = document.getElementById('audioChannelChart');
+    if (!distribution || Object.keys(distribution).length === 0) {
+        chart.innerHTML = '<div class="empty-state"><p>No audio channel data available. Videos may not be analyzed yet.</p></div>';
+        return;
+    }
+    
+    const entries = Object.entries(distribution)
+        .filter(([_, count]) => count > 0)
+        .sort((a, b) => b[1] - a[1]);
+    
+    if (entries.length === 0) {
+        chart.innerHTML = '<div class="empty-state"><p>No audio channel data available. Videos may not be analyzed yet.</p></div>';
+        return;
+    }
+    
+    const max = Math.max(...entries.map(e => e[1]));
+    chart.innerHTML = entries.map(([channel, count]) => {
+        const pct = ((count / max) * 100).toFixed(0);
+        // Map display name to filter value
+        let filterValue = '';
+        if (channel.includes('Mono')) filterValue = 'mono';
+        else if (channel.includes('Stereo')) filterValue = 'stereo';
+        else if (channel.includes('Surround')) filterValue = 'surround';
+        const onClick = filterValue ? `onclick="navigateToBrowseWithAudioChannel('${filterValue}')"` : '';
+        const clickableClass = filterValue ? 'clickable-chart-item' : '';
+        return `
+            <div class="chart-item ${clickableClass}" ${onClick} title="${filterValue ? 'Click to view ' + escapeHtml(channel) + ' videos' : ''}">
+                <div class="chart-label">${escapeHtml(channel)}</div>
+                <div class="chart-bar-container">
+                    <div class="chart-bar-fill" style="width: ${pct}%"></div>
+                    <span class="chart-value">${count}</span>
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+export function updateHdrSdrChart(hdrCount, sdrCount) {
+    const chart = document.getElementById('hdrSdrChart');
+    const total = hdrCount + sdrCount;
+    
+    if (total === 0) {
+        chart.innerHTML = '<div class="empty-state"><p>No HDR/SDR data available. Videos may not be analyzed yet.</p></div>';
+        return;
+    }
+    
+    const hdrPct = total > 0 ? ((hdrCount / total) * 100).toFixed(1) : '0.0';
+    const sdrPct = total > 0 ? ((sdrCount / total) * 100).toFixed(1) : '0.0';
+    
+    chart.innerHTML = `
+        <div class="chart-bars">
+            <div class="chart-bar clickable-chart-bar" onclick="navigateToBrowseWithHdrSdr('hdr')" title="Click to view HDR videos">
+                <div class="bar-label">HDR (${hdrPct}%)</div>
+                <div class="bar-container">
+                    <div class="bar-fill optimal" style="width: ${hdrPct}%"></div>
+                </div>
+            </div>
+            <div class="chart-bar clickable-chart-bar" onclick="navigateToBrowseWithHdrSdr('sdr')" title="Click to view SDR videos">
+                <div class="bar-label">SDR (${sdrPct}%)</div>
+                <div class="bar-container">
+                    <div class="bar-fill good" style="width: ${sdrPct}%"></div>
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+export function updateBitDepthChart(distribution) {
+    const chart = document.getElementById('bitDepthChart');
+    if (!distribution || Object.keys(distribution).length === 0) {
+        chart.innerHTML = '<div class="empty-state"><p>No bit depth data available. Videos may not be analyzed yet.</p></div>';
+        return;
+    }
+    
+    const entries = Object.entries(distribution)
+        .filter(([_, count]) => count > 0)
+        .sort((a, b) => {
+            // Sort by bit depth value (extract number from "8bit", "10bit", etc.)
+            const aDepth = parseInt(a[0]) || 0;
+            const bDepth = parseInt(b[0]) || 0;
+            return aDepth - bDepth;
+        });
+    
+    if (entries.length === 0) {
+        chart.innerHTML = '<div class="empty-state"><p>No bit depth data available. Videos may not be analyzed yet.</p></div>';
+        return;
+    }
+    
+    const max = Math.max(...entries.map(e => e[1]));
+    chart.innerHTML = entries.map(([bitDepth, count]) => {
+        const pct = ((count / max) * 100).toFixed(0);
+        // Extract bit depth number (e.g., "8bit" -> 8)
+        const bitDepthNum = parseInt(bitDepth) || 0;
+        return `
+            <div class="chart-item clickable-chart-item" onclick="navigateToBrowseWithBitDepth(${bitDepthNum})" title="Click to view ${escapeHtml(bitDepth)} videos">
+                <div class="chart-label">${escapeHtml(bitDepth)}</div>
+                <div class="chart-bar-container">
+                    <div class="chart-bar-fill" style="width: ${pct}%"></div>
+                    <span class="chart-value">${count}</span>
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+export function updateSubtitleFormatChart(distribution) {
+    const chart = document.getElementById('subtitleFormatChart');
+    if (!distribution || Object.keys(distribution).length === 0) {
+        chart.innerHTML = '<div class="empty-state"><p>No subtitle format data available. Videos may not be analyzed yet.</p></div>';
+        return;
+    }
+    
+    const validEntries = Object.entries(distribution)
+        .filter(([format]) => format && format.trim() !== '' && format.trim().toUpperCase() !== 'NULL')
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 5);
+    
+    if (validEntries.length === 0) {
+        chart.innerHTML = '<div class="empty-state"><p>No subtitle format data available. Videos may not be analyzed yet.</p></div>';
+        return;
+    }
+    
+    const max = Math.max(...validEntries.map(e => e[1]));
+    chart.innerHTML = validEntries.map(([format, count]) => {
+        const pct = ((count / max) * 100).toFixed(0);
+        const jsEscapedFormat = format.replace(/'/g, "\\'").replace(/\\/g, "\\\\");
+        return `
+            <div class="chart-item clickable-chart-item" onclick="navigateToBrowseWithSubtitleFormat('${jsEscapedFormat}')" title="Click to view ${escapeHtml(format)} subtitle format videos">
+                <div class="chart-label">${escapeHtml(format)}</div>
+                <div class="chart-bar-container">
+                    <div class="chart-bar-fill" style="width: ${pct}%"></div>
+                    <span class="chart-value">${count}</span>
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+export function updateBitrateRangeChart(distribution) {
+    const chart = document.getElementById('bitrateRangeChart');
+    if (!distribution || Object.keys(distribution).length === 0) {
+        chart.innerHTML = '<div class="empty-state"><p>No bitrate data available. Videos may not be analyzed yet.</p></div>';
+        return;
+    }
+    
+    // Define order for bitrate ranges with filter values
+    const rangeOrder = [
+        { display: "0-5 Mbps", filter: "0-5" },
+        { display: "5-10 Mbps", filter: "5-10" },
+        { display: "10-20 Mbps", filter: "10-20" },
+        { display: "20-50 Mbps", filter: "20-50" },
+        { display: "50+ Mbps", filter: "50+" }
+    ];
+    const entries = rangeOrder
+        .map(range => [range.display, range.filter, distribution[range.display] || 0])
+        .filter(([_, __, count]) => count > 0);
+    
+    if (entries.length === 0) {
+        chart.innerHTML = '<div class="empty-state"><p>No bitrate data available. Videos may not be analyzed yet.</p></div>';
+        return;
+    }
+    
+    const max = Math.max(...entries.map(e => e[2]));
+    chart.innerHTML = entries.map(([range, filterValue, count]) => {
+        const pct = ((count / max) * 100).toFixed(0);
+        return `
+            <div class="chart-item clickable-chart-item" onclick="navigateToBrowseWithBitrateRange('${filterValue}')" title="Click to view ${escapeHtml(range)} videos">
+                <div class="chart-label">${escapeHtml(range)}</div>
+                <div class="chart-bar-container">
+                    <div class="chart-bar-fill" style="width: ${pct}%"></div>
+                    <span class="chart-value">${count}</span>
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
 export async function rescanAllBrokenVideos() {
     if (!confirm('This will rescan all broken/unreadable media files. This may take a long time. Continue?')) {
         return;
@@ -483,9 +627,124 @@ export async function rescanAllBrokenVideos() {
     }
 }
 
+export async function navigateToBrowseWithAudioCodec(audioCodec) {
+    const browseTab = document.querySelector('[data-tab="browse"]');
+    if (browseTab) {
+        browseTab.click();
+        setTimeout(async () => {
+            const audioCodecFilter = document.getElementById('browseAudioCodecFilter');
+            if (audioCodecFilter) {
+                audioCodecFilter.value = audioCodec || '';
+                // Clear other filters
+                const codecFilter = document.getElementById('browseCodecFilter');
+                const containerFilter = document.getElementById('browseContainerFilter');
+                const scoreFilter = document.getElementById('browseScoreFilter');
+                if (codecFilter) codecFilter.value = '';
+                if (containerFilter) containerFilter.value = '';
+                if (scoreFilter) scoreFilter.value = '';
+                const browseModule = await import('./browse.js');
+                browseModule.resetBrowsePage();
+                browseModule.loadBrowseFilterOptions();
+                browseModule.loadBrowseMedia();
+            }
+        }, 200);
+    }
+}
+
+export async function navigateToBrowseWithAudioChannel(audioChannel) {
+    const browseTab = document.querySelector('[data-tab="browse"]');
+    if (browseTab) {
+        browseTab.click();
+        setTimeout(async () => {
+            const audioChannelFilter = document.getElementById('browseAudioChannelFilter');
+            if (audioChannelFilter) {
+                audioChannelFilter.value = audioChannel || '';
+                const browseModule = await import('./browse.js');
+                browseModule.resetBrowsePage();
+                browseModule.loadBrowseFilterOptions();
+                browseModule.loadBrowseMedia();
+            }
+        }, 200);
+    }
+}
+
+export async function navigateToBrowseWithHdrSdr(hdrSdr) {
+    const browseTab = document.querySelector('[data-tab="browse"]');
+    if (browseTab) {
+        browseTab.click();
+        setTimeout(async () => {
+            const hdrSdrFilter = document.getElementById('browseHdrSdrFilter');
+            if (hdrSdrFilter) {
+                hdrSdrFilter.value = hdrSdr || '';
+                const browseModule = await import('./browse.js');
+                browseModule.resetBrowsePage();
+                browseModule.loadBrowseFilterOptions();
+                browseModule.loadBrowseMedia();
+            }
+        }, 200);
+    }
+}
+
+export async function navigateToBrowseWithBitDepth(bitDepth) {
+    const browseTab = document.querySelector('[data-tab="browse"]');
+    if (browseTab) {
+        browseTab.click();
+        setTimeout(async () => {
+            const bitDepthFilter = document.getElementById('browseBitDepthFilter');
+            if (bitDepthFilter) {
+                bitDepthFilter.value = bitDepth?.toString() || '';
+                const browseModule = await import('./browse.js');
+                browseModule.resetBrowsePage();
+                browseModule.loadBrowseFilterOptions();
+                browseModule.loadBrowseMedia();
+            }
+        }, 200);
+    }
+}
+
+export async function navigateToBrowseWithSubtitleFormat(subtitleFormat) {
+    const browseTab = document.querySelector('[data-tab="browse"]');
+    if (browseTab) {
+        browseTab.click();
+        setTimeout(async () => {
+            const subtitleFormatFilter = document.getElementById('browseSubtitleFormatFilter');
+            if (subtitleFormatFilter) {
+                subtitleFormatFilter.value = subtitleFormat || '';
+                const browseModule = await import('./browse.js');
+                browseModule.resetBrowsePage();
+                browseModule.loadBrowseFilterOptions();
+                browseModule.loadBrowseMedia();
+            }
+        }, 200);
+    }
+}
+
+export async function navigateToBrowseWithBitrateRange(bitrateRange) {
+    const browseTab = document.querySelector('[data-tab="browse"]');
+    if (browseTab) {
+        browseTab.click();
+        setTimeout(async () => {
+            const bitrateRangeFilter = document.getElementById('browseBitrateRangeFilter');
+            if (bitrateRangeFilter) {
+                bitrateRangeFilter.value = bitrateRange || '';
+                const browseModule = await import('./browse.js');
+                browseModule.resetBrowsePage();
+                browseModule.loadBrowseFilterOptions();
+                browseModule.loadBrowseMedia();
+            }
+        }, 200);
+    }
+}
+
 // Export to window for onclick handlers
 window.navigateToBrowseWithFilter = navigateToBrowseWithFilter;
 window.navigateToBrowseWithCodec = navigateToBrowseWithCodec;
 window.navigateToBrowseWithContainer = navigateToBrowseWithContainer;
 window.navigateToBrowseWithBroken = navigateToBrowseWithBroken;
+window.navigateToBrowseWithAudioCodec = navigateToBrowseWithAudioCodec;
+window.navigateToBrowseWithAudioChannel = navigateToBrowseWithAudioChannel;
+window.navigateToBrowseWithHdrSdr = navigateToBrowseWithHdrSdr;
+window.navigateToBrowseWithBitDepth = navigateToBrowseWithBitDepth;
+window.navigateToBrowseWithSubtitleFormat = navigateToBrowseWithSubtitleFormat;
+window.navigateToBrowseWithBitrateRange = navigateToBrowseWithBitrateRange;
 window.rescanAllBrokenVideos = rescanAllBrokenVideos;

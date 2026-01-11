@@ -4,7 +4,10 @@ using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Configuration;
 using Optimarr.Data;
+using Optimarr.Models;
+using Optimarr.Services;
 using System.Collections.Concurrent;
 using System.Data.Common;
 
@@ -15,16 +18,19 @@ namespace Optimarr.Services
         private readonly IServiceProvider _serviceProvider;
         private readonly ILogger<DatabaseMigrationService> _logger;
         private readonly IHostEnvironment _hostEnvironment;
+        private readonly IConfiguration? _configuration;
         private static readonly ConcurrentDictionary<string, MigrationProgress> _migrationProgress = new();
 
         public DatabaseMigrationService(
             IServiceProvider serviceProvider,
             ILogger<DatabaseMigrationService> logger,
-            IHostEnvironment hostEnvironment)
+            IHostEnvironment hostEnvironment,
+            IConfiguration? configuration = null)
         {
             _serviceProvider = serviceProvider;
             _logger = logger;
             _hostEnvironment = hostEnvironment;
+            _configuration = configuration;
         }
 
         public static MigrationProgress? GetMigrationProgress()
@@ -237,6 +243,13 @@ namespace Optimarr.Services
                     progress.Message = "Database schema updated successfully";
                     progress.EndTime = DateTime.UtcNow;
                     _logger.LogInformation("Database schema updated successfully using EnsureCreated");
+                }
+
+                // Check if rating migration is needed (old 0-11 scale to new 0-100 scale)
+                // Create a new scope for rating migration since the previous one may be disposed
+                using (var ratingMigrationScope = _serviceProvider.CreateScope())
+                {
+                    await MigrateRatingsIfNeededAsync(ratingMigrationScope, cancellationToken);
                 }
             }
             catch (Exception ex)
@@ -917,6 +930,158 @@ CREATE INDEX IF NOT EXISTS IX_VideoAnalyses_OverallScore ON VideoAnalyses(Overal
 -- We'll try to add it and ignore the error if it already exists
 
 COMMIT;";
+        }
+
+        private async Task MigrateRatingsIfNeededAsync(IServiceScope scope, CancellationToken cancellationToken)
+        {
+            try
+            {
+                var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                var configuration = scope.ServiceProvider.GetService<IConfiguration>();
+                
+                // Check if there are any videos with old rating system (rating > 11 indicates old 0-11 scale)
+                var videosWithOldRating = await dbContext.VideoAnalyses
+                    .Where(v => !v.IsBroken && v.CompatibilityRating > 11)
+                    .CountAsync(cancellationToken);
+
+                if (videosWithOldRating == 0)
+                {
+                    _logger.LogInformation("No videos need rating migration (all ratings are already on 0-100 scale)");
+                    return;
+                }
+
+                _logger.LogInformation("Found {Count} videos with old rating system (0-11 scale). Starting migration to new system (0-100 scale)...", videosWithOldRating);
+
+                // Get all videos that need migration
+                var videosToMigrate = await dbContext.VideoAnalyses
+                    .Where(v => !v.IsBroken && v.CompatibilityRating > 11)
+                    .ToListAsync(cancellationToken);
+
+                // Get the correct logger type for VideoAnalyzerService
+                var videoAnalyzerLogger = scope.ServiceProvider.GetService<ILogger<VideoAnalyzerService>>();
+                var videoAnalyzer = new VideoAnalyzerService(configuration, videoAnalyzerLogger);
+                var updatedCount = 0;
+                var errorCount = 0;
+
+                // Process in batches
+                const int batchSize = 100;
+                for (int i = 0; i < videosToMigrate.Count; i += batchSize)
+                {
+                    var batch = videosToMigrate.Skip(i).Take(batchSize).ToList();
+
+                    foreach (var video in batch)
+                    {
+                        try
+                        {
+                            // Reconstruct VideoInfo from database record
+                            var videoInfo = ReconstructVideoInfo(video);
+
+                            // Recalculate compatibility using new media property-based system
+                            var compatibilityResult = videoAnalyzer.RecalculateCompatibility(videoInfo);
+
+                            // Update video record with new compatibility data
+                            video.CompatibilityRating = compatibilityResult.CompatibilityRating; // Now 0-100 scale
+                            // Clear old client-based fields (deprecated)
+                            video.DirectPlayClients = 0;
+                            video.RemuxClients = 0;
+                            video.TranscodeClients = 0;
+                            video.OverallScore = ParseScore(compatibilityResult.OverallScore);
+                            video.Issues = System.Text.Json.JsonSerializer.Serialize(compatibilityResult.Issues);
+                            video.Recommendations = System.Text.Json.JsonSerializer.Serialize(compatibilityResult.Recommendations);
+                            // Clear old ClientResults (deprecated)
+                            video.ClientResults = "{}";
+
+                            updatedCount++;
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(ex, "Error migrating rating for video ID {Id}", video.Id);
+                            errorCount++;
+                        }
+                    }
+
+                    // Save batch
+                    await dbContext.SaveChangesAsync(cancellationToken);
+                    _logger.LogInformation("Rating migration progress: {Processed}/{Total} videos migrated, {Errors} errors", 
+                        updatedCount, videosToMigrate.Count, errorCount);
+                }
+
+                _logger.LogInformation("Rating migration completed: {Updated} videos migrated to new 0-100 scale, {Errors} errors", 
+                    updatedCount, errorCount);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error during rating migration");
+                // Don't throw - migration failure shouldn't prevent app startup
+            }
+        }
+
+        private VideoInfo ReconstructVideoInfo(VideoAnalysis video)
+        {
+            var videoInfo = new VideoInfo
+            {
+                FilePath = video.FilePath,
+                Container = video.Container,
+                VideoCodec = video.VideoCodec,
+                VideoCodecTag = video.VideoCodecTag,
+                IsCodecTagCorrect = video.IsCodecTagCorrect,
+                BitDepth = video.BitDepth,
+                Width = video.Width,
+                Height = video.Height,
+                FrameRate = video.FrameRate,
+                IsHDR = video.IsHDR,
+                HDRType = video.HDRType,
+                IsFastStart = video.IsFastStart,
+                FileSize = video.FileSize,
+                Duration = video.Duration
+            };
+
+            // Reconstruct audio tracks from JSON
+            if (!string.IsNullOrEmpty(video.AudioTracksJson))
+            {
+                try
+                {
+                    videoInfo.AudioTracks = System.Text.Json.JsonSerializer.Deserialize<List<AudioTrack>>(
+                        video.AudioTracksJson,
+                        new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true }
+                    ) ?? new List<AudioTrack>();
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to deserialize audio tracks for video ID {Id}", video.Id);
+                    videoInfo.AudioTracks = new List<AudioTrack>();
+                }
+            }
+
+            // Reconstruct subtitle tracks from JSON
+            if (!string.IsNullOrEmpty(video.SubtitleTracksJson))
+            {
+                try
+                {
+                    videoInfo.SubtitleTracks = System.Text.Json.JsonSerializer.Deserialize<List<SubtitleTrack>>(
+                        video.SubtitleTracksJson,
+                        new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true }
+                    ) ?? new List<SubtitleTrack>();
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to deserialize subtitle tracks for video ID {Id}", video.Id);
+                    videoInfo.SubtitleTracks = new List<SubtitleTrack>();
+                }
+            }
+
+            return videoInfo;
+        }
+
+        private CompatibilityScore ParseScore(string score)
+        {
+            return score switch
+            {
+                "Optimal" => CompatibilityScore.Optimal,
+                "Good" => CompatibilityScore.Good,
+                "Poor" => CompatibilityScore.Poor,
+                _ => CompatibilityScore.Unknown
+            };
         }
     }
 

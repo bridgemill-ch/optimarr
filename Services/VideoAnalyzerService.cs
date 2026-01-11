@@ -16,167 +16,16 @@ namespace Optimarr.Services
         private readonly ReportGenerator _reportGenerator;
         private readonly ILogger<VideoAnalyzerService>? _logger;
         private readonly IConfiguration? _configuration;
-        private Dictionary<string, CodecThresholds>? _codecThresholdsCache;
+        private readonly MediaPropertyRatingService? _mediaPropertyRatingService;
 
         public VideoAnalyzerService(IConfiguration? configuration = null, ILogger<VideoAnalyzerService>? logger = null)
         {
             _reportGenerator = new ReportGenerator();
             _logger = logger;
             _configuration = configuration;
-        }
-        
-        // Read global thresholds dynamically from configuration
-        private int GetOptimalDirectPlayThreshold()
-        {
-            return _configuration?.GetValue<int>("CompatibilityRating:OptimalDirectPlayThreshold") ?? 8;
-        }
-        
-        private int GetGoodDirectPlayThreshold()
-        {
-            return _configuration?.GetValue<int>("CompatibilityRating:GoodDirectPlayThreshold") ?? 5;
-        }
-        
-        private int GetGoodCombinedThreshold()
-        {
-            return _configuration?.GetValue<int>("CompatibilityRating:GoodCombinedThreshold") ?? 8;
+            _mediaPropertyRatingService = new MediaPropertyRatingService(configuration, logger);
         }
 
-        private List<string> GetEnabledClients()
-        {
-            var enabledClients = new List<string>();
-            var allClients = JellyfinCompatibilityData.AllClients;
-            
-            // Get disabled clients from configuration
-            var disabledClientsSection = _configuration?.GetSection("CompatibilityRating:DisabledClients");
-            var disabledClients = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            
-            if (disabledClientsSection != null && disabledClientsSection.Exists())
-            {
-                foreach (var client in allClients)
-                {
-                    var isDisabled = disabledClientsSection.GetValue<bool>(client);
-                    if (isDisabled)
-                    {
-                        disabledClients.Add(client);
-                    }
-                }
-            }
-            
-            // Return all clients except disabled ones
-            foreach (var client in allClients)
-            {
-                if (!disabledClients.Contains(client))
-                {
-                    enabledClients.Add(client);
-                }
-            }
-            
-            // Ensure at least one client is enabled
-            if (enabledClients.Count == 0)
-            {
-                _logger?.LogWarning("All clients are disabled, enabling all clients by default");
-                return allClients.ToList();
-            }
-            
-            return enabledClients;
-        }
-
-        private Dictionary<string, CodecThresholds> LoadCodecThresholds()
-        {
-            // Return cached version if available (codec support doesn't change)
-            if (_codecThresholdsCache != null)
-            {
-                return _codecThresholdsCache;
-            }
-            
-            var thresholds = new Dictionary<string, CodecThresholds>();
-            
-            // Get enabled clients for threshold calculations
-            var enabledClients = GetEnabledClients();
-            
-            // Calculate expected Direct Play clients for each codec based on JellyfinCompatibilityData
-            foreach (var codecEntry in JellyfinCompatibilityData.VideoCodecSupport)
-            {
-                var codecName = codecEntry.Key;
-                var support = codecEntry.Value;
-                
-                // Count enabled clients with Supported level (can Direct Play)
-                var expectedDirectPlay = enabledClients.Count(client => 
-                    support.ContainsKey(client) && 
-                    support[client] == JellyfinCompatibilityData.SupportLevel.Supported);
-                var expectedRemux = enabledClients.Count(client => 
-                    support.ContainsKey(client) && 
-                    support[client] == JellyfinCompatibilityData.SupportLevel.Partial);
-                var totalClients = enabledClients.Count;
-                
-                // Calculate thresholds based on expected support
-                // Optimal: 80% of expected Direct Play clients
-                // Good: 60% of expected Direct Play clients, or 80% of (Direct Play + Remux)
-                var optimalThreshold = (int)Math.Ceiling(expectedDirectPlay * 0.8);
-                var goodDirectThreshold = (int)Math.Ceiling(expectedDirectPlay * 0.6);
-                var goodCombinedThreshold = (int)Math.Ceiling((expectedDirectPlay + expectedRemux) * 0.8);
-                
-                // Ensure minimum values
-                optimalThreshold = Math.Max(1, optimalThreshold);
-                goodDirectThreshold = Math.Max(1, goodDirectThreshold);
-                goodCombinedThreshold = Math.Max(1, goodCombinedThreshold);
-                
-                // Try to load from configuration, otherwise use calculated defaults
-                var configPath = $"CompatibilityRating:CodecThresholds:{codecName}";
-                thresholds[codecName] = new CodecThresholds
-                {
-                    OptimalDirectPlayThreshold = _configuration?.GetValue<int>($"{configPath}:OptimalDirectPlayThreshold") ?? optimalThreshold,
-                    GoodDirectPlayThreshold = _configuration?.GetValue<int>($"{configPath}:GoodDirectPlayThreshold") ?? goodDirectThreshold,
-                    GoodCombinedThreshold = _configuration?.GetValue<int>($"{configPath}:GoodCombinedThreshold") ?? goodCombinedThreshold,
-                    ExpectedDirectPlay = expectedDirectPlay,
-                    ExpectedRemux = expectedRemux,
-                    TotalClients = totalClients
-                };
-            }
-            
-            _codecThresholdsCache = thresholds;
-            return thresholds;
-        }
-
-        private CodecThresholds GetThresholdsForCodec(string videoCodec, int bitDepth)
-        {
-            var codecThresholds = LoadCodecThresholds();
-            
-            // Try with bit depth first
-            var codecKey = $"{videoCodec} {bitDepth}-bit";
-            if (codecThresholds.ContainsKey(codecKey))
-            {
-                return codecThresholds[codecKey];
-            }
-            
-            // Try without bit depth
-            if (codecThresholds.ContainsKey(videoCodec))
-            {
-                return codecThresholds[videoCodec];
-            }
-            
-            // Fallback to global thresholds (read dynamically)
-            var enabledClients = GetEnabledClients();
-            return new CodecThresholds
-            {
-                OptimalDirectPlayThreshold = GetOptimalDirectPlayThreshold(),
-                GoodDirectPlayThreshold = GetGoodDirectPlayThreshold(),
-                GoodCombinedThreshold = GetGoodCombinedThreshold(),
-                ExpectedDirectPlay = 0,
-                ExpectedRemux = 0,
-                TotalClients = enabledClients.Count
-            };
-        }
-
-        private class CodecThresholds
-        {
-            public int OptimalDirectPlayThreshold { get; set; }
-            public int GoodDirectPlayThreshold { get; set; }
-            public int GoodCombinedThreshold { get; set; }
-            public int ExpectedDirectPlay { get; set; }
-            public int ExpectedRemux { get; set; }
-            public int TotalClients { get; set; }
-        }
 
         public string AnalyzeVideo(string videoPath, string? subtitlePath = null)
         {
@@ -509,19 +358,71 @@ namespace Optimarr.Services
                         };
                     }
                     
-                    // Duration - try to get from Duration field (milliseconds) first, then Duration_String3 (formatted)
+                    // Duration - try to get from Duration_String3 (formatted) first as it's more reliable,
+                    // then Duration field (milliseconds) as fallback
                     var durationMsStr = GetElementValue(generalTrack, "Duration", ns) 
                         ?? GetElementValue(generalTrack, "Duration", null);
                     var durationFormattedStr = GetElementValue(generalTrack, "Duration_String3", ns)
                         ?? GetElementValue(generalTrack, "Duration_String3", null);
                     
+                    // Parse both Duration_String3 and Duration field, then choose the more reasonable one
+                    double parsedFromFormatted = 0;
+                    double parsedFromNumeric = 0;
+                    
+                    if (!string.IsNullOrEmpty(durationFormattedStr))
+                    {
+                        parsedFromFormatted = ParseDurationString(durationFormattedStr);
+                        _logger?.LogDebug("Parsed Duration_String3 '{FormattedStr}' -> {ParsedSeconds} seconds", durationFormattedStr, parsedFromFormatted);
+                    }
+                    
                     if (!string.IsNullOrEmpty(durationMsStr))
                     {
-                        // Duration field is in milliseconds
-                        if (double.TryParse(durationMsStr, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var durationMs))
+                        // Duration field should be in milliseconds according to mediainfo spec
+                        if (double.TryParse(durationMsStr, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var durationValue))
                         {
-                            videoInfo.Duration = durationMs / 1000.0;
-                            _logger?.LogDebug("Extracted duration from General track Duration field: {DurationStr} -> {DurationMs} ms -> {Duration} seconds", durationMsStr, durationMs, videoInfo.Duration);
+                            // Standard mediainfo Duration field is in milliseconds
+                            // However, some edge cases might have it in seconds, so we check
+                            if (durationValue > 86400000)
+                            {
+                                // Definitely milliseconds (> 24 hours in ms)
+                                parsedFromNumeric = durationValue / 1000.0;
+                            }
+                            else if (durationValue >= 1.0 && durationValue <= 86400.0)
+                            {
+                                // Ambiguous range: could be milliseconds (1-86400 ms = 0.001-86.4 seconds)
+                                // or seconds (1-86400 seconds = 1 second to 24 hours)
+                                // Since mediainfo spec says Duration is in milliseconds, we assume milliseconds
+                                // But if the result seems unreasonably small for a video, it might actually be in seconds
+                                var asMilliseconds = durationValue / 1000.0;
+                                
+                                // Heuristic: If value is >= 60 (1 minute) and treating as milliseconds gives < 10 seconds,
+                                // it's likely already in seconds (most videos are at least 10 seconds, usually much longer)
+                                // Also check: if value >= 3600 (1 hour) and asMilliseconds < 60, definitely seconds
+                                if (durationValue >= 60.0 && asMilliseconds < 10.0)
+                                {
+                                    // Likely already in seconds
+                                    parsedFromNumeric = durationValue;
+                                    _logger?.LogDebug("Duration field value {DurationValue} in ambiguous range, treating as seconds (value >= 60 and ms conversion {AsMs} < 10s): {Duration} seconds", durationValue, asMilliseconds, parsedFromNumeric);
+                                }
+                                else if (durationValue >= 3600.0 && asMilliseconds < 60.0)
+                                {
+                                    // Definitely seconds (value >= 1 hour but ms conversion < 1 minute)
+                                    parsedFromNumeric = durationValue;
+                                    _logger?.LogDebug("Duration field value {DurationValue} in ambiguous range, treating as seconds (value >= 3600 and ms conversion {AsMs} < 60s): {Duration} seconds", durationValue, asMilliseconds, parsedFromNumeric);
+                                }
+                                else
+                                {
+                                    // Treat as milliseconds (standard)
+                                    parsedFromNumeric = asMilliseconds;
+                                    _logger?.LogDebug("Extracted duration from General track Duration field (as milliseconds): {DurationStr} -> {DurationValue} ms -> {Duration} seconds", durationMsStr, durationValue, parsedFromNumeric);
+                                }
+                            }
+                            else
+                            {
+                                // Very small value (< 1), assume milliseconds
+                                parsedFromNumeric = durationValue / 1000.0;
+                                _logger?.LogDebug("Extracted duration from General track Duration field (as milliseconds): {DurationStr} -> {DurationValue} ms -> {Duration} seconds", durationMsStr, durationValue, parsedFromNumeric);
+                            }
                         }
                         else
                         {
@@ -529,19 +430,65 @@ namespace Optimarr.Services
                         }
                     }
                     
-                    // If duration is still 0 or invalid, try parsing Duration_String3 (formatted time)
-                    if (videoInfo.Duration <= 0 && !string.IsNullOrEmpty(durationFormattedStr))
+                    // Choose the more reasonable duration value
+                    // Prefer the larger value if both are available and one seems too small
+                    if (parsedFromFormatted > 0 && parsedFromNumeric > 0)
                     {
-                        var parsedDuration = ParseDurationString(durationFormattedStr);
-                        if (parsedDuration > 0)
+                        // Both available - use the larger one if there's a significant difference
+                        // If one is < 60 seconds and the other is >= 60 seconds, prefer the larger one
+                        // This handles cases where "0:03" (3 seconds) is wrong but Duration field has correct value
+                        if (parsedFromFormatted < 60.0 && parsedFromNumeric >= 60.0)
                         {
-                            videoInfo.Duration = parsedDuration;
-                            _logger?.LogDebug("Extracted duration from General track Duration_String3: {DurationStr} -> {Duration} seconds", durationFormattedStr, videoInfo.Duration);
+                            videoInfo.Duration = parsedFromNumeric;
+                            _logger?.LogDebug("Both duration sources available: formatted={Formatted}s, numeric={Numeric}s. Using numeric (formatted < 60s but numeric >= 60s).", parsedFromFormatted, parsedFromNumeric);
                         }
+                        else if (parsedFromNumeric < 60.0 && parsedFromFormatted >= 60.0)
+                        {
+                            videoInfo.Duration = parsedFromFormatted;
+                            _logger?.LogDebug("Both duration sources available: formatted={Formatted}s, numeric={Numeric}s. Using formatted (numeric < 60s but formatted >= 60s).", parsedFromFormatted, parsedFromNumeric);
+                        }
+                        // If both are < 60 seconds but one is significantly larger (2x or more), prefer the larger one
+                        else if (parsedFromFormatted < 60.0 && parsedFromNumeric < 60.0)
+                        {
+                            if (parsedFromNumeric >= parsedFromFormatted * 2.0)
+                            {
+                                videoInfo.Duration = parsedFromNumeric;
+                                _logger?.LogDebug("Both duration sources available: formatted={Formatted}s, numeric={Numeric}s. Using numeric (numeric is 2x+ larger).", parsedFromFormatted, parsedFromNumeric);
+                            }
+                            else if (parsedFromFormatted >= parsedFromNumeric * 2.0)
+                            {
+                                videoInfo.Duration = parsedFromFormatted;
+                                _logger?.LogDebug("Both duration sources available: formatted={Formatted}s, numeric={Numeric}s. Using formatted (formatted is 2x+ larger).", parsedFromFormatted, parsedFromNumeric);
+                            }
+                            else
+                            {
+                                // Both are similar and both < 60s, prefer formatted but log warning
+                                videoInfo.Duration = parsedFromFormatted;
+                                _logger?.LogWarning("Both duration sources are suspiciously small: formatted={Formatted}s, numeric={Numeric}s. Using formatted but duration may be incorrect.", parsedFromFormatted, parsedFromNumeric);
+                            }
+                        }
+                        // Both seem reasonable (>= 60 seconds), prefer formatted (more reliable)
                         else
                         {
-                            _logger?.LogWarning("Could not parse Duration_String3: {DurationStr}", durationFormattedStr);
+                            videoInfo.Duration = parsedFromFormatted;
+                            _logger?.LogDebug("Both duration sources available: formatted={Formatted}s, numeric={Numeric}s. Using formatted (preferred).", parsedFromFormatted, parsedFromNumeric);
                         }
+                    }
+                    else if (parsedFromFormatted > 0)
+                    {
+                        // If formatted string gives a very small value (< 60 seconds), log a warning
+                        // as it might be incorrect (most videos are longer than 1 minute)
+                        if (parsedFromFormatted < 60.0)
+                        {
+                            _logger?.LogWarning("Duration from Duration_String3 seems suspiciously small: {FormattedStr} -> {Duration} seconds. Duration may be incorrect. Duration field was: {DurationField}", durationFormattedStr, parsedFromFormatted, durationMsStr ?? "N/A");
+                        }
+                        videoInfo.Duration = parsedFromFormatted;
+                        _logger?.LogDebug("Extracted duration from General track Duration_String3: {FormattedStr} -> {Duration} seconds", durationFormattedStr, videoInfo.Duration);
+                    }
+                    else if (parsedFromNumeric > 0)
+                    {
+                        videoInfo.Duration = parsedFromNumeric;
+                        _logger?.LogDebug("Extracted duration from General track Duration field: {DurationStr} -> {Duration} seconds", durationMsStr, videoInfo.Duration);
                     }
                     
                     // If duration is still 0, try to get it from video track as fallback
@@ -558,22 +505,119 @@ namespace Optimarr.Services
                             var videoDurationFormattedStr = GetElementValue(videoTrack, "Duration_String3", ns)
                                 ?? GetElementValue(videoTrack, "Duration_String3", null);
                             
+                            // Parse both Duration_String3 and Duration field, then choose the more reasonable one
+                            double videoParsedFromFormatted = 0;
+                            double videoParsedFromNumeric = 0;
+                            
+                            if (!string.IsNullOrEmpty(videoDurationFormattedStr))
+                            {
+                                videoParsedFromFormatted = ParseDurationString(videoDurationFormattedStr);
+                            }
+                            
                             if (!string.IsNullOrEmpty(videoDurationMsStr))
                             {
-                                if (double.TryParse(videoDurationMsStr, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var durationMs))
+                                if (double.TryParse(videoDurationMsStr, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var durationValue))
                                 {
-                                    videoInfo.Duration = durationMs / 1000.0;
-                                    _logger?.LogDebug("Extracted duration from Video track Duration field: {DurationStr} -> {DurationMs} ms -> {Duration} seconds", videoDurationMsStr, durationMs, videoInfo.Duration);
+                                    if (durationValue > 86400000)
+                                    {
+                                        videoParsedFromNumeric = durationValue / 1000.0;
+                                    }
+                                    else if (durationValue >= 1.0 && durationValue <= 86400.0)
+                                    {
+                                        var asMilliseconds = durationValue / 1000.0;
+                                        
+                                        if (durationValue >= 60.0 && asMilliseconds < 10.0)
+                                        {
+                                            videoParsedFromNumeric = durationValue;
+                                            _logger?.LogDebug("Video track Duration field value {DurationValue} in ambiguous range, treating as seconds (value >= 60 and ms conversion {AsMs} < 10s): {Duration} seconds", durationValue, asMilliseconds, videoParsedFromNumeric);
+                                        }
+                                        else if (durationValue >= 3600.0 && asMilliseconds < 60.0)
+                                        {
+                                            videoParsedFromNumeric = durationValue;
+                                            _logger?.LogDebug("Video track Duration field value {DurationValue} in ambiguous range, treating as seconds (value >= 3600 and ms conversion {AsMs} < 60s): {Duration} seconds", durationValue, asMilliseconds, videoParsedFromNumeric);
+                                        }
+                                        else
+                                        {
+                                            videoParsedFromNumeric = asMilliseconds;
+                                            _logger?.LogDebug("Extracted duration from Video track Duration field (as milliseconds): {DurationStr} -> {DurationValue} ms -> {Duration} seconds", videoDurationMsStr, durationValue, videoParsedFromNumeric);
+                                        }
+                                    }
+                                    else
+                                    {
+                                        // Very small value (< 1)
+                                        if (durationValue < 0.001)
+                                        {
+                                            videoParsedFromNumeric = durationValue;
+                                            _logger?.LogDebug("Video track Duration field value {DurationValue} < 0.001, treating as seconds: {Duration} seconds", durationValue, videoParsedFromNumeric);
+                                    }
+                                    else
+                                    {
+                                        // Very small value (< 1)
+                                        if (durationValue < 0.001)
+                                        {
+                                            videoParsedFromNumeric = durationValue;
+                                            _logger?.LogDebug("Video track Duration field value {DurationValue} < 0.001, treating as seconds: {Duration} seconds", durationValue, videoParsedFromNumeric);
+                                        }
+                                        else
+                                        {
+                                            videoParsedFromNumeric = durationValue / 1000.0;
+                                            _logger?.LogDebug("Extracted duration from Video track Duration field (as milliseconds): {DurationStr} -> {DurationValue} ms -> {Duration} seconds", videoDurationMsStr, durationValue, videoParsedFromNumeric);
+                                        }
+                                    }
+                                    }
                                 }
                             }
-                            else if (!string.IsNullOrEmpty(videoDurationFormattedStr))
+                            
+                            // Choose the more reasonable duration value (same logic as General track)
+                            if (videoParsedFromFormatted > 0 && videoParsedFromNumeric > 0)
                             {
-                                var parsedDuration = ParseDurationString(videoDurationFormattedStr);
-                                if (parsedDuration > 0)
+                                if (videoParsedFromFormatted < 60.0 && videoParsedFromNumeric >= 60.0)
                                 {
-                                    videoInfo.Duration = parsedDuration;
-                                    _logger?.LogDebug("Extracted duration from Video track Duration_String3: {DurationStr} -> {Duration} seconds", videoDurationFormattedStr, videoInfo.Duration);
+                                    videoInfo.Duration = videoParsedFromNumeric;
+                                    _logger?.LogDebug("Both video track duration sources available: formatted={Formatted}s, numeric={Numeric}s. Using numeric (formatted < 60s but numeric >= 60s).", videoParsedFromFormatted, videoParsedFromNumeric);
                                 }
+                                else if (videoParsedFromNumeric < 60.0 && videoParsedFromFormatted >= 60.0)
+                                {
+                                    videoInfo.Duration = videoParsedFromFormatted;
+                                    _logger?.LogDebug("Both video track duration sources available: formatted={Formatted}s, numeric={Numeric}s. Using formatted (numeric < 60s but formatted >= 60s).", videoParsedFromFormatted, videoParsedFromNumeric);
+                                }
+                                else if (videoParsedFromFormatted < 60.0 && videoParsedFromNumeric < 60.0)
+                                {
+                                    if (videoParsedFromNumeric >= videoParsedFromFormatted * 2.0)
+                                    {
+                                        videoInfo.Duration = videoParsedFromNumeric;
+                                        _logger?.LogDebug("Both video track duration sources available: formatted={Formatted}s, numeric={Numeric}s. Using numeric (numeric is 2x+ larger).", videoParsedFromFormatted, videoParsedFromNumeric);
+                                    }
+                                    else if (videoParsedFromFormatted >= videoParsedFromNumeric * 2.0)
+                                    {
+                                        videoInfo.Duration = videoParsedFromFormatted;
+                                        _logger?.LogDebug("Both video track duration sources available: formatted={Formatted}s, numeric={Numeric}s. Using formatted (formatted is 2x+ larger).", videoParsedFromFormatted, videoParsedFromNumeric);
+                                    }
+                                    else
+                                    {
+                                        videoInfo.Duration = videoParsedFromFormatted;
+                                        _logger?.LogWarning("Both video track duration sources are suspiciously small: formatted={Formatted}s, numeric={Numeric}s. Using formatted but duration may be incorrect.", videoParsedFromFormatted, videoParsedFromNumeric);
+                                    }
+                                }
+                                else
+                                {
+                                    videoInfo.Duration = videoParsedFromFormatted;
+                                    _logger?.LogDebug("Both video track duration sources available: formatted={Formatted}s, numeric={Numeric}s. Using formatted (preferred).", videoParsedFromFormatted, videoParsedFromNumeric);
+                                }
+                            }
+                            else if (videoParsedFromFormatted > 0)
+                            {
+                                if (videoParsedFromFormatted < 60.0)
+                                {
+                                    _logger?.LogWarning("Video track Duration from Duration_String3 seems suspiciously small: {FormattedStr} -> {Duration} seconds. Duration may be incorrect.", videoDurationFormattedStr, videoParsedFromFormatted);
+                                }
+                                videoInfo.Duration = videoParsedFromFormatted;
+                                _logger?.LogDebug("Extracted duration from Video track Duration_String3: {FormattedStr} -> {Duration} seconds", videoDurationFormattedStr, videoInfo.Duration);
+                            }
+                            else if (videoParsedFromNumeric > 0)
+                            {
+                                videoInfo.Duration = videoParsedFromNumeric;
+                                _logger?.LogDebug("Extracted duration from Video track Duration field: {DurationStr} -> {Duration} seconds", videoDurationMsStr, videoInfo.Duration);
                             }
                         }
                     }
@@ -749,7 +793,7 @@ namespace Optimarr.Services
                 }
             }
 
-            // Try parsing as time format HH:MM:SS or HH:MM:SS.mmm
+            // Try parsing as time format HH:MM:SS or HH:MM:SS.mmm first
             var timeMatch = System.Text.RegularExpressions.Regex.Match(durationStr, @"(\d+):(\d+):(\d+)(?:\.(\d+))?");
             if (timeMatch.Success)
             {
@@ -759,6 +803,45 @@ namespace Optimarr.Services
                 var milliseconds = timeMatch.Groups[4].Success ? int.Parse(timeMatch.Groups[4].Value) : 0;
                 
                 var totalSeconds = hours * 3600.0 + minutes * 60.0 + seconds + milliseconds / 1000.0;
+                return totalSeconds;
+            }
+            
+            // Try parsing as time format MM:SS (e.g., "3:45" = 3 minutes 45 seconds)
+            // This handles cases where mediainfo omits hours when they're 0
+            // Note: "0:03" is ambiguous - could mean 0 minutes 3 seconds (3s) OR 0 hours 3 minutes (180s)
+            // For video files, "0:03" is more likely to mean "0:03:00" (3 minutes) than "00:00:03" (3 seconds)
+            var mmssMatch = System.Text.RegularExpressions.Regex.Match(durationStr, @"^(\d+):(\d+)(?:\.(\d+))?$");
+            if (mmssMatch.Success)
+            {
+                var firstPart = int.Parse(mmssMatch.Groups[1].Value);
+                var secondPart = int.Parse(mmssMatch.Groups[2].Value);
+                var milliseconds = mmssMatch.Groups[3].Success ? int.Parse(mmssMatch.Groups[3].Value) : 0;
+                
+                double totalSeconds;
+                if (secondPart >= 60)
+                {
+                    // Invalid format - seconds can't be >= 60
+                    // This might be a malformed string, try treating as H:MM instead
+                    totalSeconds = firstPart * 3600.0 + secondPart * 60.0 + milliseconds / 1000.0;
+                    _logger?.LogWarning("Duration string '{DurationStr}' has seconds >= 60, treating as H:MM format: {TotalSeconds} seconds", durationStr, totalSeconds);
+                }
+                else if (firstPart == 0 && secondPart < 60)
+                {
+                    // Ambiguous case: "0:03" could be:
+                    // - "00:00:03" (0 hours, 0 minutes, 3 seconds) = 3 seconds
+                    // - "00:03:00" (0 hours, 3 minutes, 0 seconds) = 180 seconds
+                    // For video files, the latter is more common (videos are rarely exactly 3 seconds)
+                    // We'll treat it as H:MM (0 hours, 3 minutes) = 180 seconds
+                    // This is more reasonable for video files
+                    totalSeconds = firstPart * 3600.0 + secondPart * 60.0 + milliseconds / 1000.0;
+                    _logger?.LogDebug("Duration string '{DurationStr}' is ambiguous (0:MM format), treating as H:MM (0 hours, {Minutes} minutes) = {TotalSeconds} seconds", durationStr, secondPart, totalSeconds);
+                }
+                else
+                {
+                    // Standard MM:SS format (first part > 0, so definitely minutes:seconds)
+                    totalSeconds = firstPart * 60.0 + secondPart + milliseconds / 1000.0;
+                }
+                
                 return totalSeconds;
             }
 
@@ -777,18 +860,25 @@ namespace Optimarr.Services
             }
 
             // Try extracting just numbers and assume milliseconds if large enough
-            var numbersOnly = System.Text.RegularExpressions.Regex.Replace(durationStr, @"[^\d.]", "");
-            if (!string.IsNullOrEmpty(numbersOnly) && double.TryParse(numbersOnly, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var numValue))
+            // Only do this if the string doesn't contain colons (which indicate time format)
+            // If it contains colons but didn't match our patterns, it's likely malformed
+            if (!durationStr.Contains(":"))
             {
-                // If the number is very large, assume milliseconds
-                if (numValue > 86400000)
+                var numbersOnly = System.Text.RegularExpressions.Regex.Replace(durationStr, @"[^\d.]", "");
+                if (!string.IsNullOrEmpty(numbersOnly) && double.TryParse(numbersOnly, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var numValue))
                 {
-                    return numValue / 1000.0;
+                    // If the number is very large, assume milliseconds
+                    if (numValue > 86400000)
+                    {
+                        return numValue / 1000.0;
+                    }
+                    // Otherwise assume seconds
+                    return numValue;
                 }
-                // Otherwise assume seconds
-                return numValue;
             }
 
+            // If we get here, the duration string couldn't be parsed
+            _logger?.LogWarning("Could not parse duration string: {DurationStr}", durationStr);
             return 0;
         }
 
@@ -1238,391 +1328,23 @@ namespace Optimarr.Services
 
         private CompatibilityResult AnalyzeCompatibility(VideoInfo videoInfo)
         {
-            var result = new CompatibilityResult();
-            var clientResults = new Dictionary<string, ClientCompatibility>();
-
-            // Get compatibility overrides from configuration
-            var overrides = GetCompatibilityOverrides();
-
-            // Determine video codec key
-            var videoCodecKey = $"{videoInfo.VideoCodec} {videoInfo.BitDepth}-bit";
-            if (!JellyfinCompatibilityData.VideoCodecSupport.ContainsKey(videoCodecKey))
+            // Use new media property-based rating system
+            if (_mediaPropertyRatingService == null)
             {
-                // Try without bit depth
-                videoCodecKey = videoInfo.VideoCodec;
+                _logger?.LogError("MediaPropertyRatingService is not available. Cannot calculate compatibility rating.");
+                // Return a default result with error
+                return new CompatibilityResult
+                {
+                    CompatibilityRating = 0,
+                    OverallScore = "Poor",
+                    Issues = new List<string> { "Rating service not available" },
+                    Recommendations = new List<string>()
+                };
             }
 
-            // Get enabled clients (filter out disabled ones)
-            var enabledClients = GetEnabledClients();
-            
-            // Analyze each enabled client
-            foreach (var client in enabledClients)
-            {
-                var clientResult = new ClientCompatibility();
-                var issues = new List<string>();
-                var warnings = new List<string>();
-
-                // Check container support (with override)
-                var containerSupport = GetSupportLevelWithOverride(
-                    videoInfo.Container, 
-                    client, 
-                    "Container",
-                    JellyfinCompatibilityData.ContainerSupport
-                        .GetValueOrDefault(videoInfo.Container, new Dictionary<string, JellyfinCompatibilityData.SupportLevel>())
-                        .GetValueOrDefault(client, JellyfinCompatibilityData.SupportLevel.Unsupported),
-                    overrides);
-
-                if (containerSupport == JellyfinCompatibilityData.SupportLevel.Unsupported)
-                {
-                    clientResult.Status = "Remux";
-                    issues.Add($"{videoInfo.Container} container not supported");
-                }
-                else if (containerSupport == JellyfinCompatibilityData.SupportLevel.Partial)
-                {
-                    clientResult.Status = "Remux";
-                    var warningMessage = $"{videoInfo.Container} container has partial support";
-                    warnings.Add(warningMessage);
-                    issues.Add(warningMessage); // Also add to issues for visibility
-                }
-
-                // Check video codec support (with override)
-                var videoSupport = GetSupportLevelWithOverride(
-                    videoCodecKey,
-                    client,
-                    "Video",
-                    JellyfinCompatibilityData.VideoCodecSupport
-                        .GetValueOrDefault(videoCodecKey, new Dictionary<string, JellyfinCompatibilityData.SupportLevel>())
-                        .GetValueOrDefault(client, JellyfinCompatibilityData.SupportLevel.Unsupported),
-                    overrides);
-
-                if (videoSupport == JellyfinCompatibilityData.SupportLevel.Unsupported)
-                {
-                    clientResult.Status = "Transcode";
-                    issues.Add($"{videoInfo.VideoCodec} {videoInfo.BitDepth}-bit video codec not supported");
-                }
-                else if (videoSupport == JellyfinCompatibilityData.SupportLevel.Partial)
-                {
-                    if (clientResult.Status == "Direct Play")
-                        clientResult.Status = "Remux";
-                    var warningMessage = $"{videoInfo.VideoCodec} {videoInfo.BitDepth}-bit has partial support";
-                    warnings.Add(warningMessage);
-                    issues.Add(warningMessage); // Also add to issues for visibility
-                }
-
-                // Special cases
-                // iOS requires MP4/M4V/MOV container for H.265/HEVC (iPhone 7+)
-                // If container is correct, iOS can direct play H.265 (including HDR on iPhone X+)
-                if (videoInfo.VideoCodec == "H.265" && videoInfo.Container != "MP4" && videoInfo.Container != "M4V" && videoInfo.Container != "MOV")
-                {
-                    if (client == "iOS" || client == "SwiftFin")
-                    {
-                        clientResult.Status = "Transcode";
-                        issues.Add("HEVC only supported in MP4/M4V/MOV containers on iOS");
-                    }
-                }
-                
-                // iOS also requires correct codec tag (hvc1) for H.265 in MP4
-                // If codec tag is incorrect, it may still work but could cause issues
-                if (videoInfo.VideoCodec == "H.265" && (videoInfo.Container == "MP4" || videoInfo.Container == "M4V" || videoInfo.Container == "MOV"))
-                {
-                    if (client == "iOS" && !string.IsNullOrEmpty(videoInfo.VideoCodecTag) && 
-                        videoInfo.VideoCodecTag.ToUpperInvariant() != "HVC1" && videoInfo.VideoCodecTag.ToUpperInvariant() != "HEVC")
-                    {
-                        // Incorrect codec tag may cause issues, but iOS might still play it
-                        warnings.Add($"iOS prefers hvc1 codec tag for HEVC in MP4 (found: {videoInfo.VideoCodecTag})");
-                    }
-                }
-
-                // HDR is supported on iOS (iPhone X and newer) - don't downgrade to transcode
-                if (videoInfo.IsHDR && client == "iOS")
-                {
-                    // HDR is supported, just add a warning about display requirements
-                    warnings.Add($"HDR content ({videoInfo.HDRType}) requires HDR-capable iPhone (X or newer) for proper display");
-                }
-                else if (videoInfo.IsHDR)
-                {
-                    warnings.Add($"HDR content ({videoInfo.HDRType}) may require tone-mapping on non-HDR displays");
-                }
-
-                // Check audio codec support (with override)
-                bool hasUnsupportedAudio = false;
-                foreach (var audioTrack in videoInfo.AudioTracks)
-                {
-                    var audioSupport = GetSupportLevelWithOverride(
-                        audioTrack.Codec,
-                        client,
-                        "Audio",
-                        JellyfinCompatibilityData.AudioCodecSupport
-                            .GetValueOrDefault(audioTrack.Codec, new Dictionary<string, JellyfinCompatibilityData.SupportLevel>())
-                            .GetValueOrDefault(client, JellyfinCompatibilityData.SupportLevel.Unsupported),
-                        overrides);
-
-                    if (audioSupport == JellyfinCompatibilityData.SupportLevel.Unsupported)
-                    {
-                        hasUnsupportedAudio = true;
-                        var warningMessage = $"{audioTrack.Codec} audio codec not supported";
-                        issues.Add(warningMessage);
-                        warnings.Add(warningMessage); // Also add to warnings for visibility
-                    }
-                    else if (audioSupport == JellyfinCompatibilityData.SupportLevel.Partial)
-                    {
-                        warnings.Add($"{audioTrack.Codec} audio has partial support");
-                    }
-                }
-
-                if (hasUnsupportedAudio && clientResult.Status == "Direct Play")
-                {
-                    clientResult.Status = "Remux"; // Light transcoding for audio
-                }
-
-                // Check subtitle support
-                // Note: External subtitles don't affect direct play compatibility - Jellyfin serves them separately
-                // Only check embedded subtitles for compatibility issues
-                foreach (var subtitleTrack in videoInfo.SubtitleTracks)
-                {
-                    // Skip external subtitles - they don't prevent direct play
-                    if (!subtitleTrack.IsEmbedded)
-                    {
-                        continue;
-                    }
-
-                    var subtitleSupport = JellyfinCompatibilityData.SubtitleSupport
-                        .GetValueOrDefault(subtitleTrack.Format, new Dictionary<string, JellyfinCompatibilityData.SupportLevel>())
-                        .GetValueOrDefault(videoInfo.Container, JellyfinCompatibilityData.SupportLevel.Unsupported);
-
-                    if (subtitleSupport == JellyfinCompatibilityData.SupportLevel.Unsupported)
-                    {
-                        var warningMessage = $"{subtitleTrack.Format} subtitles in {videoInfo.Container} may require burn-in";
-                        warnings.Add(warningMessage);
-                        issues.Add(warningMessage); // Also add to issues for visibility in non-optimal fields
-                    }
-                    else if (subtitleSupport == JellyfinCompatibilityData.SupportLevel.Partial)
-                    {
-                        var warningMessage = $"{subtitleTrack.Format} subtitles have partial support";
-                        warnings.Add(warningMessage);
-                        issues.Add(warningMessage); // Also add to issues for visibility
-                    }
-                }
-
-                // Set final status
-                if (clientResult.Status == "Unknown" && issues.Count == 0)
-                {
-                    clientResult.Status = "Direct Play";
-                }
-                else if (clientResult.Status == "Unknown")
-                {
-                    clientResult.Status = "Transcode";
-                }
-
-                clientResult.Reason = issues.Count > 0 ? string.Join("; ", issues) : "All components supported";
-                clientResult.Warnings = warnings;
-                clientResults[client] = clientResult;
-            }
-
-            result.ClientResults = clientResults;
-
-            // Calculate overall score using codec-specific thresholds
-            var directPlayCount = clientResults.Values.Count(r => r.Status == "Direct Play");
-            var remuxCount = clientResults.Values.Count(r => r.Status == "Remux");
-            var transcodeCount = clientResults.Values.Count(r => r.Status == "Transcode");
-            var totalClients = clientResults.Count;
-
-            // Get codec-specific thresholds
-            var thresholds = GetThresholdsForCodec(videoInfo.VideoCodec, videoInfo.BitDepth);
-
-            // Use direct play count as the rating
-            result.CompatibilityRating = directPlayCount;
-
-            // Use codec-specific thresholds for text labels
-            if (directPlayCount >= thresholds.OptimalDirectPlayThreshold)
-                result.OverallScore = "Optimal";
-            else if (directPlayCount >= thresholds.GoodDirectPlayThreshold || (directPlayCount + remuxCount) >= thresholds.GoodCombinedThreshold)
-                result.OverallScore = "Good";
-            else
-                result.OverallScore = "Poor";
-
-            // Generate issues and recommendations
-            GenerateIssuesAndRecommendations(videoInfo, result);
-
-            return result;
+            return _mediaPropertyRatingService.CalculateRating(videoInfo);
         }
 
-        private void GenerateIssuesAndRecommendations(VideoInfo videoInfo, CompatibilityResult result)
-        {
-            var issues = new List<string>();
-            var recommendations = new List<string>();
-
-            // Container issues
-            if (videoInfo.Container == "MKV")
-            {
-                issues.Add("MKV container may require remuxing on Chrome, Firefox, and Safari");
-                recommendations.Add("Consider using MP4 container for broader compatibility");
-            }
-
-            // Video codec issues
-            if (videoInfo.VideoCodec == "H.265" && videoInfo.BitDepth == 10)
-            {
-                issues.Add("H.265 10-bit has limited client support");
-                recommendations.Add("Re-encode to H.264 8-bit for maximum compatibility");
-            }
-            else if (videoInfo.VideoCodec == "H.265" && videoInfo.BitDepth == 8)
-            {
-                issues.Add("H.265 8-bit has partial support on many clients");
-                recommendations.Add("Consider H.264 8-bit for better compatibility");
-            }
-
-            if (videoInfo.VideoCodec == "AV1")
-            {
-                issues.Add("AV1 codec has limited support, especially on iOS and Roku");
-                recommendations.Add("Use H.264 or H.265 for better compatibility");
-            }
-
-            // HDR issues
-            if (videoInfo.IsHDR)
-            {
-                issues.Add($"HDR content ({videoInfo.HDRType}) requires client/display support or server tone-mapping");
-                recommendations.Add("Consider SDR version for clients without HDR support");
-            }
-
-            // Audio issues - check for codecs that have compatibility problems
-            var problematicAudio = videoInfo.AudioTracks.Where(a => 
-                a.Codec == "DTS" || a.Codec == "ALAC" || a.Codec == "AC3" || a.Codec == "EAC3").ToList();
-            if (problematicAudio.Any())
-            {
-                var codecList = string.Join(", ", problematicAudio.Select(a => a.Codec));
-                var specificIssues = new List<string>();
-                
-                if (problematicAudio.Any(a => a.Codec == "DTS" || a.Codec == "ALAC"))
-                {
-                    specificIssues.Add($"{string.Join(", ", problematicAudio.Where(a => a.Codec == "DTS" || a.Codec == "ALAC").Select(a => a.Codec))} audio requires transcoding on web browsers");
-                }
-                
-                if (problematicAudio.Any(a => a.Codec == "AC3" || a.Codec == "EAC3"))
-                {
-                    specificIssues.Add($"{string.Join(", ", problematicAudio.Where(a => a.Codec == "AC3" || a.Codec == "EAC3").Select(a => a.Codec))} audio codec not supported on some clients (e.g., Roku, Firefox)");
-                }
-                
-                if (specificIssues.Any())
-                {
-                    issues.AddRange(specificIssues);
-                }
-                else
-                {
-                    issues.Add($"{codecList} audio may have compatibility issues");
-                }
-                
-                recommendations.Add("Use AAC audio for universal compatibility");
-            }
-
-            // Subtitle issues
-            // Only flag embedded SRT/VTT in MP4 - external SRT/VTT files work fine with MP4
-            if (videoInfo.Container == "MP4" && videoInfo.SubtitleTracks.Any(s => 
-                (s.Format == "SRT" || s.Format == "VTT") && s.IsEmbedded))
-            {
-                issues.Add("Embedded SRT/VTT subtitles are not supported in MP4 container");
-                recommendations.Add("Use MP4TT/TXTT subtitles in MP4, or switch to MKV container, or use external SRT/VTT files");
-            }
-
-            if (videoInfo.SubtitleTracks.Any(s => (s.Format == "ASS" || s.Format == "SSA") && videoInfo.Container != "MKV"))
-            {
-                issues.Add("ASS/SSA subtitles only work in MKV container");
-                recommendations.Add("Use SRT or VTT subtitles, or switch to MKV container");
-            }
-
-            // Fast start optimization check (MP4 only)
-            // Note: Fast start doesn't affect direct play compatibility - it's just a streaming optimization
-            // Only add as a recommendation, not an issue
-            if ((videoInfo.Container == "MP4" || videoInfo.Container == "M4V" || videoInfo.Container == "MOV") && !videoInfo.IsFastStart)
-            {
-                recommendations.Add("MP4 file is not optimized for streaming (missing fast start). Use FFmpeg with -movflags +faststart to optimize for streaming");
-            }
-
-            // Codec tag validation (MP4 only)
-            if ((videoInfo.Container == "MP4" || videoInfo.Container == "M4V" || videoInfo.Container == "MOV") && !videoInfo.IsCodecTagCorrect && !string.IsNullOrEmpty(videoInfo.VideoCodecTag))
-            {
-                var expectedTag = GetExpectedCodecTag(videoInfo.VideoCodec);
-                if (!string.IsNullOrEmpty(expectedTag))
-                {
-                    issues.Add($"Incorrect codec tag '{videoInfo.VideoCodecTag}' for {videoInfo.VideoCodec} in MP4 (should be {expectedTag})");
-                    recommendations.Add($"Use FFmpeg with -tag:v {expectedTag.ToLowerInvariant()} to fix the codec tag");
-                }
-            }
-
-            result.Issues = issues;
-            result.Recommendations = recommendations;
-        }
-
-        /// <summary>
-        /// Gets the expected codec tag for a given video codec.
-        /// </summary>
-        private string GetExpectedCodecTag(string videoCodec)
-        {
-            if (string.IsNullOrEmpty(videoCodec))
-                return string.Empty;
-
-            var codecUpper = videoCodec.ToUpperInvariant();
-
-            if (codecUpper.Contains("H.265") || codecUpper.Contains("HEVC"))
-                return "hvc1";
-
-            if (codecUpper.Contains("H.264") || codecUpper.Contains("AVC"))
-                return "avc1";
-
-            if (codecUpper.Contains("VP9"))
-                return "vp09";
-
-            if (codecUpper.Contains("AV1"))
-                return "av01";
-
-            return string.Empty;
-        }
-
-        /// <summary>
-        /// Gets compatibility overrides from configuration.
-        /// </summary>
-        private List<CompatibilityOverride> GetCompatibilityOverrides()
-        {
-            if (_configuration == null)
-                return new List<CompatibilityOverride>();
-
-            try
-            {
-                var overrides = _configuration.GetSection("CompatibilityOverrides").Get<List<CompatibilityOverride>>();
-                return overrides ?? new List<CompatibilityOverride>();
-            }
-            catch
-            {
-                return new List<CompatibilityOverride>();
-            }
-        }
-
-        /// <summary>
-        /// Gets support level with override applied if exists.
-        /// </summary>
-        private JellyfinCompatibilityData.SupportLevel GetSupportLevelWithOverride(
-            string codec,
-            string client,
-            string category,
-            JellyfinCompatibilityData.SupportLevel defaultLevel,
-            List<CompatibilityOverride> overrides)
-        {
-            // Check for override
-            var overrideItem = overrides.FirstOrDefault(o => 
-                o.Codec.Equals(codec, StringComparison.OrdinalIgnoreCase) &&
-                o.Client.Equals(client, StringComparison.OrdinalIgnoreCase) &&
-                o.Category.Equals(category, StringComparison.OrdinalIgnoreCase));
-
-            if (overrideItem != null)
-            {
-                // Parse override support level
-                if (Enum.TryParse<JellyfinCompatibilityData.SupportLevel>(overrideItem.SupportLevel, out var overrideLevel))
-                {
-                    return overrideLevel;
-                }
-            }
-
-            return defaultLevel;
-        }
     }
 }
 

@@ -746,7 +746,7 @@ namespace Optimarr.Controllers
         }
 
         [HttpPost("match-videos")]
-        public async Task<ActionResult> MatchVideosWithServarr()
+        public Task<ActionResult> MatchVideosWithServarr()
         {
             _logger.LogInformation("Video matching with Servarr requested");
             try
@@ -754,13 +754,13 @@ namespace Optimarr.Controllers
                 // Check if services are available
                 if (!_sonarrService.IsEnabled && !_radarrService.IsEnabled)
                 {
-                    return BadRequest(new { error = "Neither Sonarr nor Radarr is enabled. Please configure at least one service in Settings." });
+                    return Task.FromResult<ActionResult>(BadRequest(new { error = "Neither Sonarr nor Radarr is enabled. Please configure at least one service in Settings." }));
                 }
 
                 if ((_sonarrService.IsEnabled && !_sonarrService.IsConnected) && 
                     (_radarrService.IsEnabled && !_radarrService.IsConnected))
                 {
-                    return BadRequest(new { error = "Servarr services are enabled but not connected. Please check your connection settings." });
+                    return Task.FromResult<ActionResult>(BadRequest(new { error = "Servarr services are enabled but not connected. Please check your connection settings." }));
                 }
 
                 // Generate match ID
@@ -787,12 +787,12 @@ namespace Optimarr.Controllers
                     }
                 });
 
-                return Ok(new { matchId, message = "Video matching started" });
+                return Task.FromResult<ActionResult>(Ok(new { matchId, message = "Video matching started" }));
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error starting video matching with Servarr");
-                return StatusCode(500, new { error = ex.Message });
+                return Task.FromResult<ActionResult>(StatusCode(500, new { error = ex.Message }));
             }
         }
 
