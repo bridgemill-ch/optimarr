@@ -54,11 +54,11 @@ docker run -d \
 
 ## Screenshots
 
-![Dashboard View](/screenshot/Screenshot 2026-01-11 170142.png?raw=true "Dashboard View")
+![Dashboard View](screenshot/dashboard-view.png "Dashboard View")
 
-![Library Management](/screenshot/Screenshot 2026-01-11 170212.png?raw=true "Library Management")
+![Library Management](screenshot/library-management.png "Library Management")
 
-![Media Analysis](/screenshot/Screenshot 2026-01-11 170237.png?raw=true "Media Analysis")
+![Media Analysis](screenshot/media-analysis.png "Media Analysis")
 
 ## Support
 
